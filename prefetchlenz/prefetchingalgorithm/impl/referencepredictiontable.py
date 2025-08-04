@@ -71,7 +71,7 @@ class RptAlgorithm(PrefetchAlgorithm):
             elif state == RptState.Transient:
                 if stride == new_stride:
                     if RptConfig.prefetch_on_transient:
-                        predictions.append(address)
+                        predictions.append(new_addr)
                     state = RptState.Steady
 
                 else:
@@ -79,7 +79,7 @@ class RptAlgorithm(PrefetchAlgorithm):
 
             elif state == RptState.Steady:
                 if stride == new_stride:
-                    predictions.append(address)
+                    predictions.append(new_addr)
                     state = RptState.Steady
 
                 else:
@@ -88,7 +88,7 @@ class RptAlgorithm(PrefetchAlgorithm):
             elif state == RptState.Unstable:
                 if stride == new_stride:
                     if RptConfig.prefetch_on_unstable:
-                        predictions.append(address)
+                        predictions.append(new_addr)
                     state = RptState.Transient
 
                 else:
