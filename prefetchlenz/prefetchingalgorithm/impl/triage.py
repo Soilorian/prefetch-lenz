@@ -2,6 +2,8 @@ import logging
 from dataclasses import dataclass
 from typing import List, Optional
 
+from prefetchlenz.cache.Cache import Cache
+from prefetchlenz.cache.replacementpolicy.impl.Hawkeye import HawkeyeReplacementPolicy
 from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 from prefetchlenz.util.size import Size
@@ -12,21 +14,81 @@ logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.triage")
 @dataclass
 class TriagePrefetcherMetaData:
     """
-    Metadata for a single address:
-      neighbor    – correlated next address
-      confidence  – 1-bit counter to avoid thrash
-      score       – usefulness count for Hawkeye replacement
+    Metadata associated with each tracked memory address.
+
+    Attributes:
+        neighbor (int): The next correlated memory address observed after this one.
+        confidence (int): A 1-bit confidence counter (0 or 1) indicating whether the
+                          correlation is strong enough to be trusted for prefetching.
+        score (int): score used for hawkeye algorithm.
     """
 
     neighbor: int
-    confidence: int = 1
-    score: int = 0
+    confidence: int = 0
+
+
+class TrainingUnit:
+    """
+    PC-localized training unit for the Triage prefetcher.
+
+    Tracks the last address accessed by each program counter (PC)
+    to help discover localized memory stream patterns.
+
+    Methods:
+        train(access: MemoryAccess) -> tuple[int, int] | None:
+            Update training state with a new access and return (prev_address, curr_address) pair.
+        clear():
+            Reset internal state.
+    """
+
+    def __init__(self):
+        self.pc_histories = {}
+
+    def train(self, access: MemoryAccess) -> tuple[int, int] | None:
+        result = None
+        if access.pc in self.pc_histories:
+            result = self.pc_histories[access.pc], access.address
+
+        self.pc_histories[access.pc] = access.address
+        return result
+
+    def clear(self):
+        self.pc_histories.clear()
 
 
 class TriagePrefetcher(PrefetchAlgorithm):
     """
-    Triage Prefetcher with on-chip metadata,
-    Hawkeye-style replacement, and dynamic sizing.
+    Triage Prefetcher with on-chip metadata, dynamic confidence tracking,
+    and adaptive resizing using a Hawkeye-inspired replacement policy.
+
+    This prefetcher learns localized memory streams by correlating
+    consecutive accesses from the same program counter (PC).
+    It stores a small amount of metadata in a tag-store-like cache structure
+    and triggers a prefetch if the confidence in the learned correlation is high.
+
+    Features:
+    - Localized pattern learning using `TrainingUnit`.
+    - Metadata caching with configurable associativity and sets.
+    - Confidence mechanism for prefetch filtering.
+    - Online adaptation of table size based on usefulness.
+    - Pluggable replacement policy via `Cache`.
+
+    Args:
+        num_ways (int): Initial number of ways per cache set.
+        init_size (Size): Initial total metadata storage size.
+        min_size (Size): Minimum allowable table size.
+        max_size (Size): Maximum allowable table size.
+        resize_epoch (int): Number of accesses between resize decisions.
+        grow_thresh (float): Usefulness threshold to grow metadata table.
+        shrink_thresh (float): Usefulness threshold to shrink metadata table.
+
+    Methods:
+        init():
+            Initialize/reset the internal state and metadata cache.
+        progress(access: MemoryAccess, prefetch_hit: bool) -> List[int]:
+            Process a memory access and potentially issue a prefetch.
+        close():
+            Clean up resources and log final cache state.
     """
 
     def __init__(
@@ -40,17 +102,18 @@ class TriagePrefetcher(PrefetchAlgorithm):
         shrink_thresh: float = 0.05,
     ):
         self.num_ways = num_ways
-        self.num_sets = init_size.bytes / num_ways
+        self.num_sets = init_size.bytes // num_ways
         self.min_size = min_size
         self.max_size = max_size
 
-        # table: {address → metadata}
-        self.table: dict[int, TriagePrefetcherMetaData] = {}
+        self.cache = Cache(
+            num_sets=self.num_sets,
+            num_ways=self.num_ways,
+            replacement_policy_cls=HawkeyeReplacementPolicy,
+        )
 
-        # last access per PC (for training)
-        self.last_access_per_pc: dict[int, int] = {}
+        self.training_unit = TrainingUnit()
 
-        # stats for dynamic resizing
         self.meta_accesses = 0
         self.useful_prefetches = 0
         self.resize_epoch = resize_epoch
@@ -59,119 +122,86 @@ class TriagePrefetcher(PrefetchAlgorithm):
 
         logger.debug("TriagePrefetcher instantiated")
 
-    def init(self, size: Optional[Size] = None):
+    def init(self):
         """
         Initialize or reset internal state.
-
-        Args:
-            size (Size, optional): override initial metadata capacity.
         """
-        if size:
-            self.size = size
-        self.table.clear()
-        self.last_access_per_pc.clear()
+        self.cache.flush()
+        self.training_unit.clear()
         self.meta_accesses = 0
         self.useful_prefetches = 0
-        logger.info(f"Triage init: metadata capacity = {self.size}")
+        logger.info(f"Triage init: metadata capacity = {self.num_sets}")
 
     def progress(self, access: MemoryAccess, prefetch_hit: bool) -> List[int]:
         """
-        Process one memory access, update metadata and maybe predict.
+        Process a single memory access.
 
-        Args:
-            access (MemoryAccess): (address, PC)
-            prefetch_hit (bool): whether this access was prefetched
-
-        Returns:
-            List[int]: list with at most one prefetch address
+        :param access: The current memory access event.
+        :type access: MemoryAccess
+        :param prefetch_hit: Whether this access was already prefetched.
+        :type prefetch_hit: bool
+        :return: List of predicted addresses to prefetch.
+        :rtype: List[int]
         """
-        pc = access.pc
+
+        if prefetch_hit:
+            self.useful_prefetches += 1
         addr = access.address
         preds: List[int] = []
 
-        # 1) Train on PC-localized stream
-        prev = self.last_access_per_pc.get(pc)
+        # 1) issue the prefetch based on metadata
+        prefetch: TriagePrefetcherMetaData = self.cache.get(addr)
+        if prefetch is not None:
+            preds.append(prefetch.neighbor)
 
-        if prev is not None and prefetch_hit:
-            entry = self.table.get(prev)
-            entry.score += 1
-            self.useful_prefetches += 1
-            logger.debug(
-                f"prefetch hit! updating score {hex(addr)}→{hex(entry.neighbor)} (score={entry.score})"
-            )
+        # 2) Train on PC-localized stream
+        metadata = self.training_unit.train(access)
+        if metadata is not None:
 
-        if prev is not None:
-            md = self.table.get(prev)
-            # update or insert mapping prev → addr
-            if md:
-                if md.neighbor == addr:
-                    md.confidence = 1
+            # 3) update metadata in cache
+            prefetch: TriagePrefetcherMetaData = self.cache.get(metadata[0])
+            if prefetch is None:
+                prefetch = TriagePrefetcherMetaData(neighbor=metadata[1], confidence=0)
+            elif prefetch.neighbor != metadata[1]:
+                if prefetch.confidence < 1:
+                    prefetch.neighbor = metadata[1]
                 else:
-                    md.confidence -= 1
-                    if md.confidence <= 0:
-                        md.neighbor = addr
-                        md.confidence = 1
+                    prefetch.confidence = max((prefetch.confidence - 1), 0)
             else:
-                # if full, evict one
-                if len(self.table) >= int(self.size):
-                    self._evict_entry()
-                self.table[prev] = TriagePrefetcherMetaData(neighbor=addr)
-                logger.debug(f"New mapping: {hex(prev)}→{hex(addr)}")
+                prefetch.confidence = min(1, (prefetch.confidence + 1))
 
-        # 2) Prediction only if this PC is “trained” (we’ve seen it before)
-        if prev is not None:
-            entry = self.table.get(addr)
-            if entry:
-                preds.append(entry.neighbor)
-                # score this entry only if the subsequent access missed (useful)
-                if prefetch_hit:
-                    entry.score += 1
-                    self.useful_prefetches += 1
-                logger.debug(
-                    f"Predict {hex(addr)}→{hex(entry.neighbor)} (score={entry.score})"
-                )
+            self.cache.put(metadata[0], prefetch)
 
-        # 3) Update stats and maybe resize
+        # 4) Update stats and maybe resize
         self.meta_accesses += 1
         if self.meta_accesses >= self.resize_epoch:
             self._maybe_resize()
             self.meta_accesses = 0
             self.useful_prefetches = 0
 
-        # 4) Update last access for this PC
-        self.last_access_per_pc[pc] = addr
         return preds
-
-    def _evict_entry(self):
-        """
-        Evict the entry with the lowest 'score' (Hawkeye-style).
-        """
-        # find the key with minimum score
-        victim = min(self.table.items(), key=lambda kv: kv[1].score)[0]
-        md = self.table.pop(victim)
-        logger.info(f"Evicted {hex(victim)}→{hex(md.neighbor)} (score={md.score})")
 
     def _maybe_resize(self):
         """
         Grow/shrink metadata capacity based on usefulness ratio.
         """
         ratio = self.useful_prefetches / max(1, self.resize_epoch)
-        old = int(self.size)
-        if ratio > self.grow_thresh and int(self.size) < int(self.max_size):
-            # grow by 1.5×, capped
-            new_bytes = min(int(self.max_size), int(self.size) * 3 // 2)
-            self.size = Size(new_bytes)
+        old = int(self.num_ways * self.num_sets)
+        if ratio > self.grow_thresh and old < int(self.max_size):
+            self.num_ways += 1
+            self.cache.change_num_ways(self.num_ways)
+            new_bytes = int(self.num_ways * self.num_sets)
             logger.info(f"Growing table: {old}→{new_bytes} bytes (ratio={ratio:.3f})")
-        elif ratio < self.shrink_thresh and int(self.size) > int(self.min_size):
-            # shrink by 0.75×, floored
-            new_bytes = max(int(self.min_size), int(self.size) * 3 // 4)
-            self.size = Size(new_bytes)
+        elif ratio < self.shrink_thresh and old > int(self.min_size):
+            self.num_ways -= 1
+            self.cache.change_num_ways(self.num_ways)
+            new_bytes = int(self.num_ways * self.num_sets)
             logger.info(f"Shrinking table: {old}→{new_bytes} bytes (ratio={ratio:.3f})")
 
     def close(self):
         """
         Final cleanup.
         """
-        logger.info(f"Triage closed: final entries={len(self.table)}")
-        self.table.clear()
-        self.last_access_per_pc.clear()
+        logger.info(f"Triage closed: final entries={len(self.cache)}")
+        self.cache.flush()
+        self.training_unit.clear()

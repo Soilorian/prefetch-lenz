@@ -49,13 +49,14 @@ def test_hawkeye_eviction_lowest_score():
     triage.progress(MemoryAccess(address=0xB, pc=1), prefetch_hit=False)
     # Cause the prefetch to be issued (A→B), and mark it useful
     triage.progress(MemoryAccess(address=0xA, pc=1), prefetch_hit=False)
+    triage.progress(MemoryAccess(address=0xB, pc=1), prefetch_hit=False)
 
     # Train PC=2: C->D  (no subsequent prefetch, score stays 0)
-    triage.progress(MemoryAccess(address=0xC, pc=2), prefetch_hit=False)
     triage.progress(MemoryAccess(address=0xD, pc=2), prefetch_hit=False)
+    triage.progress(MemoryAccess(address=0xE, pc=2), prefetch_hit=False)
 
     # At this point we have two entries: {A→B (score=1), C→D (score=0)}
-    assert 0xA in triage.table and 0xC in triage.table
+    assert 0xA in triage.cache and 0xC in triage.cache
     assert triage.table[0xA].score == 1
     assert triage.table[0xC].score == 0
 
