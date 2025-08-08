@@ -8,6 +8,9 @@ class Cache:
     ):
         self.num_sets = num_sets
         self.num_ways = num_ways
+        self.replacement_policy_cls = replacement_policy_cls
+        self.policy_args = args
+        self.policy_kwargs = kwargs
         self.sets = [{} for _ in range(num_sets)]
         self.policies = [
             replacement_policy_cls(*args, **kwargs) for _ in range(num_sets)
@@ -49,13 +52,35 @@ class Cache:
             policy.remove(key)
 
     def change_num_ways(self, num_ways: int):
-        # todo update num ways, if increased, no need for further work
-        # todo if decreased, we need to loop through the sets and evict from them until they reach the size
-        pass
+        """
+        Update the number of ways per set. If increased, no eviction is needed.
+        If decreased, evict from each set until it meets the new limit.
+        """
+        self.num_ways = num_ways
+        for idx in range(self.num_sets):
+            set_ = self.sets[idx]
+            policy = self.policies[idx]
+
+            while len(set_) > num_ways:
+                victim = policy.evict()
+                if victim in set_:
+                    del set_[victim]
+                policy.remove(victim)
 
     def flush(self):
-        # todo clears the cache
-        pass
+        """
+        Clears the entire cache and resets the replacement policies.
+        """
+        self.sets = [{} for _ in range(self.num_sets)]
+        self.policies = [
+            self.replacement_policy_cls(*self.policy_args, **self.policy_kwargs)
+            for _ in range(self.num_sets)
+        ]
+
+    def prefetch_hit(self, key: int):
+        idx = self._index(key)
+        policy = self.policies[idx]
+        policy.prefetch_hit(key)
 
     def __contains__(self, key: int) -> bool:
         return self.get(key) is not None

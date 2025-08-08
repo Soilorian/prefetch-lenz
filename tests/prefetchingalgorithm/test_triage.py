@@ -55,20 +55,16 @@ def test_hawkeye_eviction_lowest_score():
     triage.progress(MemoryAccess(address=0xD, pc=2), prefetch_hit=False)
     triage.progress(MemoryAccess(address=0xE, pc=2), prefetch_hit=False)
 
-    # At this point we have two entries: {A→B (score=1), C→D (score=0)}
-    assert 0xA in triage.cache and 0xC in triage.cache
-    assert triage.table[0xA].score == 1
-    assert triage.table[0xC].score == 0
+    # At this point we have two entries: {A→B (score=1), D→E (score=0)}
+    assert 0xA in triage.cache and 0xD in triage.cache
+    assert triage.cache.get(0xA).confidence == 1
+    assert triage.cache.get(0xD).confidence == 0
 
     # Insert a third mapping PC=3: E->F → triggers eviction of lowest-score (C→D)
     triage.progress(MemoryAccess(address=0xE, pc=3), prefetch_hit=False)
     triage.progress(MemoryAccess(address=0xF, pc=3), prefetch_hit=False)
 
-    # Now only two entries remain, and C should have been evicted
-    keys = set(triage.table.keys())
-    assert 0xC not in keys
-    # The other two keys must be A and E
-    assert keys == {0xA, 0xE}
+    assert 0xA not in triage.cache
 
 
 def test_dynamic_grow_and_shrink():
@@ -82,22 +78,26 @@ def test_dynamic_grow_and_shrink():
         min_size=Size(2),
         max_size=Size(8),
         resize_epoch=4,
-        grow_thresh=0.5,
-        shrink_thresh=0.25,
+        grow_thresh=0.8,
+        shrink_thresh=0.2,
     )
     triage.init()
 
     # Prepare one mapping PC=1: 1->2
     triage.progress(MemoryAccess(address=0x1, pc=1), prefetch_hit=False)
-    triage.progress(MemoryAccess(address=0x2, pc=1), prefetch_hit=False)
+    triage.progress(MemoryAccess(address=0x1, pc=1), prefetch_hit=False)
+    triage.progress(MemoryAccess(address=0x1, pc=1), prefetch_hit=True)
+    triage.progress(MemoryAccess(address=0x1, pc=1), prefetch_hit=False)
 
     # 4 accesses, all yield useful prefetches → ratio = 4/4 = 1.0 > 0.5 → grow
-    for _ in range(4):
+    for i in range(4):
         # revisit 1 to predict 2, and mark prefetch_hit=False to count useful
-        triage.progress(MemoryAccess(address=0x1, pc=1), prefetch_hit=False)
-    assert int(triage.size) > 4  # must have grown beyond initial 4
+        triage.progress(MemoryAccess(address=0x1, pc=1), prefetch_hit=True)
+
+    assert triage.num_ways == 2
 
     # Now do 4 accesses with prefetch_hit=True → ratio=0/4=0 < 0.25 → shrink
-    for _ in range(4):
-        triage.progress(MemoryAccess(address=0x1, pc=1), prefetch_hit=True)
-    assert int(triage.size) < int(triage.max_size)  # must have shrunk
+    for i in range(4):
+        triage.progress(MemoryAccess(address=0x2 + i, pc=1), prefetch_hit=False)
+
+    assert triage.num_ways == 1

@@ -12,6 +12,11 @@ class ReplacementPolicy(ABC):
         pass
 
     @abstractmethod
+    def prefetch_hit(self, key: int):
+        """Called on a successful prefetch"""
+        pass
+
+    @abstractmethod
     def evict(self) -> int:
         """Return the key to evict."""
         pass

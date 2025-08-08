@@ -9,6 +9,9 @@ class HawkeyeReplacementPolicy(ReplacementPolicy):
         self.scores = {}
 
     def touch(self, key: int):
+        pass
+
+    def prefetch_hit(self, key: int):
         self.scores[key] += 1
 
     def evict(self) -> int:

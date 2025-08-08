@@ -101,6 +101,7 @@ class TriagePrefetcher(PrefetchAlgorithm):
         grow_thresh: float = 0.05,
         shrink_thresh: float = 0.05,
     ):
+        self.previous_access = None
         self.num_ways = num_ways
         self.num_sets = init_size.bytes // num_ways
         self.min_size = min_size
@@ -146,8 +147,12 @@ class TriagePrefetcher(PrefetchAlgorithm):
 
         if prefetch_hit:
             self.useful_prefetches += 1
+            if self.previous_access is not None:
+                self.cache.prefetch_hit(self.previous_access.address)
+
         addr = access.address
         preds: List[int] = []
+        self.previous_access = access
 
         # 1) issue the prefetch based on metadata
         prefetch: TriagePrefetcherMetaData = self.cache.get(addr)
@@ -187,12 +192,12 @@ class TriagePrefetcher(PrefetchAlgorithm):
         """
         ratio = self.useful_prefetches / max(1, self.resize_epoch)
         old = int(self.num_ways * self.num_sets)
-        if ratio > self.grow_thresh and old < int(self.max_size):
+        if ratio >= self.grow_thresh and old < int(self.max_size):
             self.num_ways += 1
             self.cache.change_num_ways(self.num_ways)
             new_bytes = int(self.num_ways * self.num_sets)
             logger.info(f"Growing table: {old}→{new_bytes} bytes (ratio={ratio:.3f})")
-        elif ratio < self.shrink_thresh and old > int(self.min_size):
+        elif ratio <= self.shrink_thresh and old > int(self.min_size):
             self.num_ways -= 1
             self.cache.change_num_ways(self.num_ways)
             new_bytes = int(self.num_ways * self.num_sets)
