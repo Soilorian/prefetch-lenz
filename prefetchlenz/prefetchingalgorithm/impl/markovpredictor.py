@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import List
 
 from prefetchlenz.cache.Cache import Cache
 from prefetchlenz.cache.replacementpolicy.impl.lfu import LfuReplacementPolicy
