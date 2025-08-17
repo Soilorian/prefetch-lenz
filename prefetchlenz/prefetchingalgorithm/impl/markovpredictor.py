@@ -86,19 +86,25 @@ class MarkovHistoryTable:
     order: int
     cache: Cache
 
-    def __init__(self, order: int = 1):
+    def __init__(self, order: int = 1, num_entries: int = 1024):
         self.order = order
+        self.cache = Cache(
+            num_sets=1,
+            num_ways=num_entries,
+            replacement_policy_cls=LfuReplacementPolicy,
+        )
 
     def clear(self):
         self.cache.flush()
 
+    def get_entry(self, key: tuple[int]) -> MarkovEntry | None:
+        return self.cache.get(hash(key))
+
+    def put_entry(self, key: tuple[int], entry: MarkovEntry):
+        self.cache.put(hash(key), entry)
+
 
 class MarkovPredictor(PrefetchAlgorithm):
-    first_order_table: MarkovHistoryTable
-    second_order_table: MarkovHistoryTable
-    first_order_history: HistoryUnit
-    second_order_history: HistoryUnit
-
     def __init__(self):
         self.first_order_table = MarkovHistoryTable(order=1)
         self.second_order_table = MarkovHistoryTable(order=2)
@@ -110,15 +116,50 @@ class MarkovPredictor(PrefetchAlgorithm):
         self.second_order_table.clear()
 
     def progress(self, access: MemoryAccess, prefetch_hit: bool):
-        # look for pattern in the second order table, if present, mark the prediction and add to prefetches
-        # if not, look at the first order table
+        prefetches = []
 
-        # then time to update tables
-        # use the history unit to get the previous accesses of these addresses
-        # and store the resulting entry in both tables
-        pass
+        # 1) Try second-order prediction
+        second_hist = self.second_order_history.access(access)
+        if second_hist:
+            prev, curr = second_hist
+            key = tuple(prev)
+            entry = self.second_order_table.get_entry(key)
+            if entry:
+                preds = entry.predict()
+                prefetches.extend(preds)
+
+        # fallback: 1st-order
+        if not prefetches:
+            first_hist = self.first_order_history.access(access)
+            if first_hist:
+                prev, curr = first_hist
+                key = tuple(prev)
+                entry = self.first_order_table.get_entry(key)
+                if entry:
+                    preds = entry.predict()
+                    prefetches.extend(preds)
+
+        # 2) Update Markov tables with the new access
+        if second_hist:
+            prev, curr = second_hist
+            key = tuple(prev)
+            entry = self.second_order_table.get_entry(key)
+            if not entry:
+                entry = MarkovEntry(list(prev))
+                self.second_order_table.put_entry(key, entry)
+            entry.update(curr)
+
+        if first_hist:
+            prev, curr = first_hist
+            key = tuple(prev)
+            entry = self.first_order_table.get_entry(key)
+            if not entry:
+                entry = MarkovEntry(list(prev))
+                self.first_order_table.put_entry(key, entry)
+            entry.update(curr)
+
+        return prefetches
 
     def close(self):
         self.first_order_table.clear()
         self.second_order_table.clear()
-        pass
