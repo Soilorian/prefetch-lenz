@@ -10,6 +10,7 @@ logger = logging.getLogger("prefetchLenz.dataloader.impl")
 
 @dataclass
 class MemoryAccess:
+    cpu: int
     address: int
     pc: int
 
