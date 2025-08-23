@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from prefetchlenz.cache.Cache import Cache
-from prefetchlenz.cache.replacementpolicy.impl.Hawkeye import HawkeyeReplacementPolicy
+from prefetchlenz.cache.replacementpolicy.impl.hawkeye import HawkeyeReplacementPolicy
 from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 from prefetchlenz.util.size import Size
@@ -148,7 +148,7 @@ class TriagePrefetcher(PrefetchAlgorithm):
         if prefetch_hit:
             self.useful_prefetches += 1
             if self.previous_access is not None:
-                self.cache.prefetch_hit(self.previous_access.address)
+                self.cache.prefetch_hit(self.previous_access.key)
 
         addr = access.address
         preds: List[int] = []

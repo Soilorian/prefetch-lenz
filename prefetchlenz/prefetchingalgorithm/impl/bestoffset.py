@@ -1,186 +1,267 @@
-from collections import defaultdict, deque
+import logging
+from abc import abstractmethod
 from dataclasses import dataclass
-from typing import DefaultDict, Dict, List, Optional, Tuple
+from typing import List
+
+from prefetchlenz.cache.Cache import Cache
+from prefetchlenz.cache.replacementpolicy.impl.single import SingleReplacementPolicy
+from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
 
 
-# MemoryAccess is expected to have .pc and .address fields (same as your loader)
-@dataclass
-class MemoryAccess:
-    pc: int
-    address: int
+class OffsetList:
+    """
+    Manages a predefined list of offsets and their corresponding scores.
+
+    The offsets are numbers from 1 to 256 with prime factors less than or equal to 5.
+    The class handles score updates and selecting the best offset.
+    """
+
+    def __init__(self):
+        """
+        Initializes the offset list and score tracking.
+        """
+        # The list of offsets is hardcoded based on the provided prime factorization constraint.
+        self.offsets = [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            8,
+            9,
+            10,
+            12,
+            15,
+            16,
+            18,
+            20,
+            24,
+            25,
+            27,
+            30,
+            32,
+            36,
+            40,
+            45,
+            48,
+            50,
+            54,
+            60,
+            64,
+            72,
+            75,
+            80,
+            81,
+            90,
+            96,
+            100,
+            108,
+            120,
+            125,
+            128,
+            135,
+            144,
+            150,
+            160,
+            162,
+            180,
+            192,
+            200,
+            216,
+            225,
+            240,
+            243,
+            250,
+            256,
+        ]
+        self.scores = {offset: 0 for offset in self.offsets}
+        self.needed = set(self.offsets)
+
+    def get_needed(self):
+        """
+        Returns the list of offsets that still need to be tested.
+        """
+        return list(self.needed)
+
+    def update_score(self, offset: int, delta: int):
+        """
+        Increases the score of a given offset.
+
+        Args:
+            offset (int): The offset to update.
+            delta (int): The amount to add to the score.
+        """
+        if offset in self.scores:
+            self.scores[offset] += delta
+
+    def reset_scores(self):
+        """
+        Resets all offset scores to zero and re-initializes the 'needed' set.
+        """
+        self.scores = {offset: 0 for offset in self.offsets}
+        self.needed = set(self.offsets)
+
+    def get_best_offset(self, bad_score: int):
+        """
+        Finds the offset with the highest score above a certain threshold.
+
+        Args:
+            bad_score (int): The minimum score an offset must have to be considered.
+
+        Returns:
+            int | None: The best offset, or None if no offset meets the score threshold.
+        """
+        best_offset = None
+        best_score = bad_score
+        for offset, score in self.scores.items():
+            if score > best_score:
+                best_score = score
+                best_offset = offset
+        return best_offset
+
+
+class RecentRequestTable:
+    """
+    A table to store recent memory accesses using a cache-like structure.
+
+    This is used to check for a previous access at a specific address (X - d).
+    """
+
+    def __init__(self):
+        """
+        Initializes the cache used for the recent request table.
+        """
+        self.cache = Cache(
+            num_sets=256, num_ways=1, replacement_policy_cls=SingleReplacementPolicy
+        )
+
+    def add_access(self, access: MemoryAccess):
+        """
+        Stores a memory access address in the table.
+
+        Args:
+            access (MemoryAccess): The memory access to record.
+        """
+        self.cache.put(access.address, access.address)
+
+    def check_exists(self, address: int) -> bool:
+        """
+        Checks if a given address is present in the table.
+
+        Args:
+            address (int): The address to check.
+
+        Returns:
+            bool: True if the address is found, False otherwise.
+        """
+        return self.cache.get(address) is not None
 
 
 class BestOffsetPrefetcher:
     """
-    Best-Offset prefetcher:
-    - Maintain per-PC counters for candidate offsets.
-    - Issue prefetches using the currently-best offset for that PC.
-    - When a prefetch hit occurs, credit the offset that generated that prefetch.
-    - Simple aging (periodic halving) and per-PC offset capacity (LFU eviction).
+    A prefetcher that learns the best offset by testing a predefined list of offsets.
+
+    It works in rounds, testing each offset against recent memory accesses to find a
+    recurring pattern (X, X+d). The offset with the highest score becomes the
+    prefetching offset.
     """
 
     def __init__(
         self,
-        max_offset: int = 16,  # consider offsets 1..max_offset
-        track_offsets_per_pc: int = 32,  # how many offset counters to keep per pc
-        degree: int = 1,  # number of prefetches: addr + offset, addr + 2*offset, ...
-        aging_interval: int = 10000,  # accesses between counter halvings
-        outstanding_limit: int = 4096,  # limit outstanding prefetch records
+        max_score=31,
+        max_rounds=100,
+        bad_score=1,
     ):
-        self.max_offset = max(1, max_offset)
-        self.track_offsets_per_pc = max(1, track_offsets_per_pc)
-        self.degree = max(1, degree)
-        self.aging_interval = max(1, aging_interval)
-        self.outstanding_limit = max(1, outstanding_limit)
+        """
+        Initializes the prefetcher with configuration parameters.
 
-        # per-PC offset counters: pc -> {offset -> count}
-        self.pc_offset_counts: Dict[int, Dict[int, int]] = defaultdict(dict)
-        # best offset cache (for quick lookup): pc -> offset (computed lazily)
-        self.pc_best_offset: Dict[int, int] = {}
-
-        # outstanding prefetches mapping: address -> (pc_that_issued, offset_used)
-        # when a prefetch_hit occurs for an address we check this map to credit the offset
-        self.outstanding: Dict[int, Tuple[int, int]] = {}
-
-        # simple FIFO queue to evict oldest outstanding when limit reached
-        self.outstanding_queue: deque = deque()
-
-        self.accesses_since_aging = 0
+        Args:
+            max_score (int): The score at which a training round ends and an offset is selected.
+            max_rounds (int): The maximum number of rounds to test all offsets before a selection is made.
+            bad_score (int): The minimum score for an offset to be considered for selection.
+        """
+        self.max_score = max_score
+        self.max_rounds = max_rounds
+        self.bad_score = bad_score
+        self.offset = None
+        self.current_round = 0
+        self.current_offset_index = 0
+        self.offset_list = OffsetList()
+        self.rr_table = RecentRequestTable()
 
     def init(self):
-        self.pc_offset_counts.clear()
-        self.pc_best_offset.clear()
-        self.outstanding.clear()
-        self.outstanding_queue.clear()
-        self.accesses_since_aging = 0
-
-    def _ensure_offset_tracked(self, pc: int, offset: int):
-        """Ensure offset entry exists for pc (create with count 0) and enforce per-pc capacity."""
-        pc_map = self.pc_offset_counts[pc]
-        if offset in pc_map:
-            return
-        # if capacity reached, evict LFU offset
-        if len(pc_map) >= self.track_offsets_per_pc:
-            # find least frequent offset and remove it
-            victim = min(pc_map.items(), key=lambda kv: kv[1])[0]
-            del pc_map[victim]
-        pc_map[offset] = 0
-        # best offset cached invalidation
-        if pc in self.pc_best_offset:
-            del self.pc_best_offset[pc]
-
-    def _select_best_offset(self, pc: int) -> int:
-        """Return best offset for pc (choose 1 if no data). Cache the result."""
-        if pc in self.pc_best_offset:
-            return self.pc_best_offset[pc]
-        pc_map = self.pc_offset_counts.get(pc)
-        if not pc_map:
-            best = 1
-        else:
-            # pick offset with highest count; tie-breaker: smallest offset (prefers locality)
-            best = min(sorted(pc_map.items(), key=lambda kv: (-kv[1], kv[0])))[0]
-            # Explanation: sorting yields tuples (offset,count) -> use (-count, offset)
-            # then min gives the offset with highest count, tie-broken by smaller offset
-        self.pc_best_offset[pc] = best
-        return best
-
-    def _record_outstanding(self, addr: int, pc: int, offset: int):
-        """Record a prefetch for later crediting; respect outstanding_limit."""
-        if addr in self.outstanding:
-            return
-        self.outstanding[addr] = (pc, offset)
-        self.outstanding_queue.append(addr)
-        if len(self.outstanding_queue) > self.outstanding_limit:
-            old = self.outstanding_queue.popleft()
-            self.outstanding.pop(old, None)
-
-    def _credit_offset_for_prefetch_hit(self, addr: int):
         """
-        If addr was an outstanding prefetch, credit the corresponding pc/offset.
-        Return True if credited.
+        Resets the prefetcher to its initial state, clearing all learned data.
         """
-        info = self.outstanding.pop(addr, None)
-        if info is None:
-            return False
-        pc, offset = info
-        # remove from queue if still present (cheap: ignore if not present)
-        try:
-            self.outstanding_queue.remove(addr)
-        except ValueError:
-            pass
-        # ensure offset tracked and increment count
-        self._ensure_offset_tracked(pc, offset)
-        self.pc_offset_counts[pc][offset] += 1
-        # invalidate cached best offset for pc
-        if pc in self.pc_best_offset:
-            del self.pc_best_offset[pc]
-        return True
-
-    def _age_counters(self):
-        """Halve all counters (integer division) to age out old patterns."""
-        for pc, cmap in list(self.pc_offset_counts.items()):
-            for off in list(cmap.keys()):
-                cmap[off] = cmap[off] // 2
-            # if a pc's map becomes empty, remove it to free memory
-            if not cmap:
-                del self.pc_offset_counts[pc]
-                self.pc_best_offset.pop(pc, None)
-            else:
-                # maybe invalidate cached best offset
-                self.pc_best_offset.pop(pc, None)
+        self.offset = None
+        self.current_round = 0
+        self.current_offset_index = 0
+        self.offset_list.reset_scores()
+        self.rr_table.cache.flush()
 
     def progress(self, access: MemoryAccess, prefetch_hit: bool) -> List[int]:
         """
-        Process an access.
-        - If prefetch_hit is True, credit the outstanding prefetch that brought this block (if any).
-        - Select best offset for the PC, issue prefetches with configured degree.
-        - Return list of addresses to prefetch.
+        Processes a memory access and determines the next prefetch address.
+
+        This method is the core of the prefetcher's learning and operation. It
+        tests a potential offset, updates its score, and issues a prefetch if
+        an offset has been selected.
+
+        Args:
+            access (MemoryAccess): The current memory access from the CPU.
+            prefetch_hit (bool): A flag indicating if the current access was a prefetch hit (not used in this implementation).
+
+        Returns:
+            List[int]: A list of addresses to prefetch.
         """
-        self.accesses_since_aging += 1
-        if self.accesses_since_aging >= self.aging_interval:
-            self._age_counters()
-            self.accesses_since_aging = 0
+        X = access.address
+        prefetches = []
 
-        addr = access.address
-        pc = access.pc
-        prefetches: List[int] = []
+        if self.offset is None:
+            # Training phase
+            offsets_to_test = self.offset_list.get_needed()
+            if not offsets_to_test:
+                # Should not happen in this implementation, but a safeguard
+                self.offset_list.reset_scores()
+                offsets_to_test = self.offset_list.get_needed()
+                self.current_offset_index = 0
 
-        # 1) credit offset if this access was a prefetch hit
-        if prefetch_hit:
-            # If this access was prefetched previously, outstanding map should contain it.
-            credited = self._credit_offset_for_prefetch_hit(addr)
-            # credited may be False if outstanding entry expired/evicted; we ignore that case.
+            d = offsets_to_test[self.current_offset_index % len(offsets_to_test)]
 
-        # 2) pick best offset for this PC (fallback to 1)
-        best_offset = self._select_best_offset(pc)
+            # Check for a matching access in the past
+            if self.rr_table.check_exists(X - d):
+                self.offset_list.update_score(d, 1)
+                if self.offset_list.scores[d] >= self.max_score:
+                    # Training complete: an offset reached max_score
+                    self.offset = d
+                    self.offset_list.reset_scores()
+                    self.rr_table.cache.flush()
 
-        # clamp best_offset to allowed range
-        if best_offset <= 0 or best_offset > self.max_offset:
-            best_offset = 1
+            self.current_offset_index += 1
+            if self.current_offset_index >= len(offsets_to_test):
+                # End of a round
+                self.current_offset_index = 0
+                self.current_round += 1
+                if self.current_round >= self.max_rounds:
+                    # Training complete: max_rounds reached
+                    self.offset = self.offset_list.get_best_offset(self.bad_score)
+                    self.current_round = 0
+                    self.offset_list.reset_scores()
+                    self.rr_table.cache.flush()
 
-        # 3) issue degree prefetches: addr + best_offset * i for i=1..degree
-        for i in range(1, self.degree + 1):
-            tgt = addr + best_offset * i
-            # record outstanding mapping to credit when/if a hit happens
-            self._record_outstanding(tgt, pc, best_offset)
-            prefetches.append(tgt)
+        # Add the current access to the RR table for future checks
+        self.rr_table.add_access(access)
+
+        # Issue a prefetch if an offset has been selected
+        if self.offset is not None:
+            prefetches.append(X + self.offset)
 
         return prefetches
 
-    def observe_other_offset_candidate(self, pc: int, offset: int, success: int = 1):
-        """
-        Optional API: allow external training/feedback for offsets (not required).
-        Increment pc->offset by 'success' (useful when offline evaluating many offsets).
-        """
-        if offset <= 0 or offset > self.max_offset:
-            return
-        self._ensure_offset_tracked(pc, offset)
-        self.pc_offset_counts[pc][offset] += success
-        if pc in self.pc_best_offset:
-            del self.pc_best_offset[pc]
-
     def close(self):
-        self.pc_offset_counts.clear()
-        self.pc_best_offset.clear()
-        self.outstanding.clear()
-        self.outstanding_queue.clear()
+        """
+        Flushes the prefetcher state and resources on shutdown.
+        """
+        self.rr_table.cache.flush()
+        self.init()

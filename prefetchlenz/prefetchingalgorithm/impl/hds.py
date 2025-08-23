@@ -335,7 +335,7 @@ class HdsPrefetcher:
         self._matches = 0
 
     def _symbolize(self, access) -> Symbol:
-        return (int(access.pc), int(access.address))
+        return (int(access.pc), int(access.key))
 
     def _rebuild_dfsm(self, streams: List[List[Symbol]]):
         # Cap number of hot streams, rank by length descending as a cheap proxy for coverage.

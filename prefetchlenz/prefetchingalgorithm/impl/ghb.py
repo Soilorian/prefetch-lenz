@@ -212,7 +212,7 @@ class GlobalHistoryBufferPrefetcher:
         Returns a list of addresses to prefetch.
         """
         pc = access.pc
-        addr = access.address
+        addr = access.key
 
         # 1) if hit on a prefetched block, credit it
         if prefetch_hit:

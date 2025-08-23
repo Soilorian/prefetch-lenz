@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Tuple
 
 from prefetchlenz.cache.Cache import Cache
-from prefetchlenz.cache.replacementpolicy.impl.Hawkeye import HawkeyeReplacementPolicy
+from prefetchlenz.cache.replacementpolicy.impl.hawkeye import HawkeyeReplacementPolicy
 from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 from prefetchlenz.util.size import Size
