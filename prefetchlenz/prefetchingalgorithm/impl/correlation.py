@@ -6,7 +6,6 @@ from prefetchlenz.cache.Cache import Cache
 from prefetchlenz.cache.replacementpolicy.impl.lru import LruReplacementPolicy
 from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
-from prefetchlenz.util.size import Size
 
 logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.impl.correlation")
 
