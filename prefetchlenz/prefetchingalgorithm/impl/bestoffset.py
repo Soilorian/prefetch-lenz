@@ -1,6 +1,3 @@
-import logging
-from abc import abstractmethod
-from dataclasses import dataclass
 from typing import List
 
 from prefetchlenz.cache.Cache import Cache
@@ -125,7 +122,7 @@ class RecentRequestTable:
     """
     A table to store recent memory accesses using a cache-like structure.
 
-    This is used to check for a previous access at a specific address (X - d).
+    This is used to check for previous access at a specific address (X - d).
     """
 
     def __init__(self):
@@ -229,7 +226,7 @@ class BestOffsetPrefetcher:
 
             d = offsets_to_test[self.current_offset_index % len(offsets_to_test)]
 
-            # Check for a matching access in the past
+            # Check for matching access in the past
             if self.rr_table.check_exists(X - d):
                 self.offset_list.update_score(d, 1)
                 if self.offset_list.scores[d] >= self.max_score:

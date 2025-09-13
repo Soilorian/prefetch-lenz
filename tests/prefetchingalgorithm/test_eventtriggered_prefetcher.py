@@ -1,5 +1,3 @@
-from typing import Tuple
-
 from prefetchlenz.prefetchingalgorithm.access.eventtriggeredmemoryaccess import (
     EventTriggeredMemoryAccess,
 )
@@ -11,7 +9,7 @@ from prefetchlenz.prefetchingalgorithm.impl.eventtriggered import (
 
 def make_access(pc, addr, latency=50, pressure=2.0):
     return EventTriggeredMemoryAccess(
-        pc=pc, address=addr, cpu=0, accessLatency=latency, bandwidthPressure=pressure
+        pc=pc, address=addr, accessLatency=latency, bandwidthPressure=pressure
     )
 
 

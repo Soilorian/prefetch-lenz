@@ -11,7 +11,6 @@ def make_access(pc, addr, demand_miss=True):
     return FeedbackDirectedMemoryAccess(
         pc=pc,
         address=addr,
-        cpu=0,
         demandMiss=demand_miss,
     )
 

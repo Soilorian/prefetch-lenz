@@ -12,10 +12,8 @@ def test():
     # Simulate a pattern with offset 4
     for i in range(200):
         # A recent access at 100, then an access at 104
-        prefetcher.progress(MemoryAccess(cpu=0, address=100 + 4 * i, pc=0), False)
-        prefetches = prefetcher.progress(
-            MemoryAccess(cpu=0, address=104 + 4 * i, pc=0), False
-        )
+        prefetcher.progress(MemoryAccess(address=100 + 4 * i, pc=0), False)
+        prefetches = prefetcher.progress(MemoryAccess(address=104 + 4 * i, pc=0), False)
 
         if prefetcher.offset is not None:
             print(
@@ -33,7 +31,7 @@ def test():
     )  # Force a short training
     # Only provide a few accesses to a single offset, not enough to meet max_score
     for i in range(200):
-        prefetcher.progress(MemoryAccess(cpu=0, address=100 + i, pc=0), False)
+        prefetcher.progress(MemoryAccess(address=100 + i, pc=0), False)
 
     # After max_rounds, the prefetcher should choose the most scored offset, even if below max_score
     print(f"Final offset after max rounds: {prefetcher.offset}")
@@ -47,9 +45,7 @@ def test():
     prefetcher = BestOffsetPrefetcher(max_score=10, max_rounds=2)
     # Simulate random accesses
     for i in range(200):
-        prefetches = prefetcher.progress(
-            MemoryAccess(cpu=0, address=i * 7, pc=0), False
-        )
+        prefetches = prefetcher.progress(MemoryAccess(address=i * 7, pc=0), False)
         assert not prefetches, "No prefetch should be issued when no pattern is found."
 
     assert (

@@ -3,7 +3,7 @@ from prefetchlenz.prefetchingalgorithm.impl.correlation import CorrelationPrefet
 
 
 def make_access(addr: int):
-    return MemoryAccess(address=addr, pc=0, cpu=0)
+    return MemoryAccess(address=addr, pc=0)
 
 
 def test_simple_correlation_learning():

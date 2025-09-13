@@ -11,7 +11,8 @@ def test_rpt_initial_no_predict():
             MemoryAccess(
                 address=1,
                 pc=1,
-            )
+            ),
+            prefetch_hit=False,
         )
         == []
     )
@@ -25,24 +26,28 @@ def test_rpt_predicts_stride():
         MemoryAccess(
             address=100,
             pc=1,
-        )
+        ),
+        prefetch_hit=False,
     )  # sets last_addr=100
     rpt.progress(
         MemoryAccess(
             address=104,
             pc=1,
-        )
+        ),
+        prefetch_hit=False,
     )  # stride=4, state=0→0
     rpt.progress(
         MemoryAccess(
             address=108,
             pc=1,
-        )
+        ),
+        prefetch_hit=False,
     )  # stride=4, state=0→1
     preds = rpt.progress(
         MemoryAccess(
             address=112,
             pc=1,
-        )
+        ),
+        prefetch_hit=False,
     )  # stride=4, state=1→2 → predict 116
     assert preds == [116]

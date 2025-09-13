@@ -1,5 +1,3 @@
-import pytest
-
 from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.impl.triage import TriagePrefetcher
 from prefetchlenz.util.size import Size

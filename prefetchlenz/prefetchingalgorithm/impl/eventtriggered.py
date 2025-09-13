@@ -35,6 +35,10 @@ class EwmaState:
     initialized: bool = False
 
 
+def _key(access: EventTriggeredMemoryAccess, metric: Metric) -> Tuple[int, Metric]:
+    return int(access.pc), metric
+
+
 class EwmaCalculator:
     """
     General-purpose EWMA bank.
@@ -54,11 +58,6 @@ class EwmaCalculator:
         self._bank: Dict[Tuple[int, Metric], EwmaState] = defaultdict(EwmaState)
         logger.info("EWMA: initialized alpha=%.3f", self.alpha)
 
-    def _key(
-        self, access: EventTriggeredMemoryAccess, metric: Metric
-    ) -> Tuple[int, Metric]:
-        return (int(access.pc), metric)
-
     def clear(self):
         self._bank.clear()
 
@@ -68,7 +67,7 @@ class EwmaCalculator:
         """
         Ingest one sample X for a metric of this stream.
         """
-        k = self._key(access, metric)
+        k = (access.pc, metric)
         st = self._bank[k]
         if not st.initialized:
             st.value = float(sample)
@@ -87,7 +86,7 @@ class EwmaCalculator:
         self, access: EventTriggeredMemoryAccess, metric: Metric
     ) -> Optional[float]:
         """Return current EWMA value for stream metric, if initialized."""
-        st = self._bank.get(self._key(access, metric))
+        st = self._bank.get((access.pc, metric))
         return st.value if (st and st.initialized) else None
 
     def get_parameters(
@@ -193,15 +192,12 @@ class ObservationQueue:
         self._last_addr.clear()
         self._last_ts.clear()
 
-    def _key(self, access: EventTriggeredMemoryAccess) -> int:
-        return int(access.pc)
-
     def update(
         self, access: EventTriggeredMemoryAccess, latency: Optional[int]
     ) -> Tuple[int, Optional[float]]:
-        pc = self._key(access)
+        pc = access.pc
         now = time.time()
-        addr = int(access.address)
+        addr = access.address
 
         prev_addr = self._last_addr.get(pc)
         stride = (addr - prev_addr) if prev_addr is not None else 0
@@ -226,7 +222,7 @@ class ObservationQueue:
     def get_history(
         self, access: EventTriggeredMemoryAccess, k: int = 4
     ) -> List[ObsRecord]:
-        pc = self._key(access)
+        pc = access.pc
         dq = self._hist.get(pc, deque())
         return list(dq)[-k:]
 

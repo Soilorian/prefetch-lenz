@@ -4,7 +4,7 @@ from prefetchlenz.prefetchingalgorithm.impl.ebcp import EbcpPrefetcher
 
 def make_access(addr: int):
     """Helper to build MemoryAccess with aligned addr."""
-    return MemoryAccess(address=addr, pc=0, cpu=0)
+    return MemoryAccess(address=addr, pc=0)
 
 
 def test_epoch_creation_and_prediction():
