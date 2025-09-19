@@ -1,164 +1,157 @@
+# markov_predictor.py
+import logging
+from collections import deque
 from dataclasses import dataclass
+from typing import Deque, Dict, List, Optional, Tuple
 
-from prefetchlenz.cache.Cache import Cache
-from prefetchlenz.cache.replacementpolicy.impl.lfu import LfuReplacementPolicy
-from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
-from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
+logger = logging.getLogger("markov_predictor")
+logger.addHandler(logging.NullHandler())
 
 
 @dataclass
-class FrequencyEntry:
+class MemoryAccess:
     address: int
-    frequency: int
+    pc: int
 
 
-class HistoryUnit:
-    order: int
+class HistoryBuffer:
+    """
+    Sliding buffer holding last `max_order` addresses.
+    push(addr) -> (prev_states, curr_states)
+      prev_states: dict order->tuple(...) representing state ending at previous access
+      curr_states: dict order->tuple(...) representing state ending at current access
+    """
 
-    def __init__(self, order: int = 1):
-        self.pc_histories = {}  # pc → list of last addresses
-        self.order = order
+    def __init__(self, max_order: int = 2):
+        assert max_order >= 1
+        self.max_order = max_order
+        self.buf: Deque[int] = deque(maxlen=max_order)
 
-    def access(self, access: MemoryAccess) -> tuple[list[int], int] | None:
-        pc = access.pc
-        addr = access.address
-        hist = self.pc_histories.setdefault(pc, [])
-
-        hist.append(addr)
-        if len(hist) > self.order:
-            # keep only last "order" addresses
-            hist = hist[-self.order :]
-            self.pc_histories[pc] = hist
-
-            return hist[:-1], hist[-1]  # (previous addresses, current)
-        return None
+    def push(
+        self, addr: int
+    ) -> Tuple[Dict[int, Tuple[int, ...]], Dict[int, Tuple[int, ...]]]:
+        prev_buf = list(self.buf)
+        self.buf.append(addr)
+        curr_buf = list(self.buf)
+        prev_states: Dict[int, Tuple[int, ...]] = {}
+        curr_states: Dict[int, Tuple[int, ...]] = {}
+        for k in range(1, self.max_order + 1):
+            if len(prev_buf) >= k:
+                prev_states[k] = tuple(prev_buf[-k:])
+            if len(curr_buf) >= k:
+                curr_states[k] = tuple(curr_buf[-k:])
+        logger.debug(
+            "HistoryBuffer: pushed 0x%X prev=%s curr=%s", addr, prev_states, curr_states
+        )
+        return prev_states, curr_states
 
     def clear(self):
-        self.pc_histories.clear()
+        self.buf.clear()
 
 
-@dataclass
-class MarkovEntry:
-    key: list[int]
-    frequencies: Cache
+class MarkovTable:
+    """
+    Simple mapping state(tuple) -> Counter(next_addr -> freq).
+    Not capacity-limited here for clarity.
+    """
 
-    def __init__(
-        self,
-        key: list[int],
-        num_cache_entry: int = 4,
-        selection_tolerance: float = 0.05,
-    ):
-        self.key = key
-        self.selection_tolerance = selection_tolerance
-        self.frequencies = Cache(
-            num_sets=1,
-            num_ways=num_cache_entry,
-            replacement_policy_cls=LfuReplacementPolicy,
-        )
+    def __init__(self, selection_tolerance: float = 0.05, min_count: int = 1):
+        self.table: Dict[Tuple[int, ...], Dict[int, int]] = {}
+        self.selection_tolerance = float(selection_tolerance)
+        self.min_count = int(min_count)
 
-    def update(self, address: int):
-        entry = self.frequencies.get(address)
-        if entry is not None:
-            # just increment frequency
-            entry
-        else:
-            # insert with initial frequency = 1
-            self.frequencies.put(address, 1)
+    def update(self, key: Tuple[int, ...], nxt: int):
+        d = self.table.setdefault(key, {})
+        d[nxt] = d.get(nxt, 0) + 1
+        logger.debug("MarkovTable: update %s -> 0x%X count=%d", key, nxt, d[nxt])
 
-    def predict(self) -> list[int]:
-        # collect all candidates and sort by frequency
-        candidates = list(self.frequencies.sets[0].items())
-        if not candidates:
+    def predict(self, key: Tuple[int, ...]) -> List[int]:
+        d = self.table.get(key)
+        if not d:
             return []
-
-        candidates.sort(key=lambda kv: kv[1], reverse=True)
-        top_freq = candidates[0][1]
-        result = [
-            addr
-            for addr, freq in candidates
-            if freq >= (1 - self.selection_tolerance) * top_freq
-        ]
-        return result
-
-
-class MarkovHistoryTable:
-    order: int
-    cache: Cache
-
-    def __init__(self, order: int = 1, num_entries: int = 1024):
-        self.order = order
-        self.cache = Cache(
-            num_sets=1,
-            num_ways=num_entries,
-            replacement_policy_cls=LfuReplacementPolicy,
+        items = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
+        top = items[0][1]
+        threshold = max(self.min_count, int((1.0 - self.selection_tolerance) * top))
+        preds = [addr for addr, freq in items if freq >= threshold]
+        logger.debug(
+            "MarkovTable: predict %s -> %s (top=%d thresh=%d)",
+            key,
+            preds,
+            top,
+            threshold,
         )
+        return preds
 
     def clear(self):
-        self.cache.flush()
-
-    def get_entry(self, key: tuple[int]) -> MarkovEntry | None:
-        return self.cache.get(hash(key))
-
-    def put_entry(self, key: tuple[int], entry: MarkovEntry):
-        self.cache.put(hash(key), entry)
+        self.table.clear()
 
 
-class MarkovPredictor(PrefetchAlgorithm):
-    def __init__(self):
-        self.first_order_table = MarkovHistoryTable(order=1)
-        self.second_order_table = MarkovHistoryTable(order=2)
-        self.first_order_history = HistoryUnit(order=1)
-        self.second_order_history = HistoryUnit(order=2)
+class MarkovPredictor:
+    """
+    Markov predictor supporting first-order and second-order transitions.
+
+    Usage:
+      p = MarkovPredictor()
+      p.init()
+      preds = p.progress(MemoryAccess(address, pc), prefetch_hit=False)
+    """
+
+    def __init__(self, selection_tolerance: float = 0.05, min_count: int = 1):
+        # support up to second order
+        self.history = HistoryBuffer(max_order=2)
+        self.order1 = MarkovTable(
+            selection_tolerance=selection_tolerance, min_count=min_count
+        )
+        self.order2 = MarkovTable(
+            selection_tolerance=selection_tolerance, min_count=min_count
+        )
 
     def init(self):
-        self.first_order_table.clear()
-        self.second_order_table.clear()
+        logger.info("MarkovPredictor: init")
+        self.history.clear()
+        self.order1.clear()
+        self.order2.clear()
 
-    def progress(self, access: MemoryAccess, prefetch_hit: bool):
-        prefetches = []
+    def progress(self, access: MemoryAccess, prefetch_hit: bool = False) -> List[int]:
+        """
+        Process access and return predictions (list of addresses).
+        Prediction uses `curr_state` (the state including the current address).
+        Update uses prev_state -> curr mapping.
+        """
+        addr = int(access.address)
+        prev_states, curr_states = self.history.push(addr)
 
-        # 1) Try second-order prediction
-        second_hist = self.second_order_history.access(access)
-        if second_hist:
-            prev, curr = second_hist
-            key = tuple(prev)
-            entry = self.second_order_table.get_entry(key)
-            if entry:
-                preds = entry.predict()
-                prefetches.extend(preds)
+        preds: List[int] = []
 
-        # fallback: 1st-order
-        if not prefetches:
-            first_hist = self.first_order_history.access(access)
-            if first_hist:
-                prev, curr = first_hist
-                key = tuple(prev)
-                entry = self.first_order_table.get_entry(key)
-                if entry:
-                    preds = entry.predict()
-                    prefetches.extend(preds)
+        # Prediction: prefer second-order using curr state if available
+        if 2 in curr_states:
+            key2 = curr_states[2]
+            preds = self.order2.predict(key2)
+            if preds:
+                logger.debug(
+                    "MarkovPredictor: 2nd-order pred for %s -> %s", key2, preds
+                )
 
-        # 2) Update Markov tables with the new access
-        if second_hist:
-            prev, curr = second_hist
-            key = tuple(prev)
-            entry = self.second_order_table.get_entry(key)
-            if not entry:
-                entry = MarkovEntry(list(prev))
-                self.second_order_table.put_entry(key, entry)
-            entry.update(curr)
+        # Fallback to first-order on curr
+        if not preds and 1 in curr_states:
+            key1 = curr_states[1]
+            preds = self.order1.predict(key1)
+            if preds:
+                logger.debug(
+                    "MarkovPredictor: 1st-order pred for %s -> %s", key1, preds
+                )
 
-        if first_hist:
-            prev, curr = first_hist
-            key = tuple(prev)
-            entry = self.first_order_table.get_entry(key)
-            if not entry:
-                entry = MarkovEntry(list(prev))
-                self.first_order_table.put_entry(key, entry)
-            entry.update(curr)
+        # Update transitions: for each order k, update prev_state(k) -> curr(addr)
+        # (prev_states reflect state ending at previous access)
+        if 2 in prev_states:
+            self.order2.update(prev_states[2], addr)
+        if 1 in prev_states:
+            self.order1.update(prev_states[1], addr)
 
-        return prefetches
+        return preds
 
     def close(self):
-        self.first_order_table.clear()
-        self.second_order_table.clear()
+        logger.info("MarkovPredictor: close")
+        self.history.clear()
+        self.order1.clear()
+        self.order2.clear()
