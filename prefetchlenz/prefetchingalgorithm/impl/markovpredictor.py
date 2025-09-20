@@ -4,6 +4,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Tuple
 
+from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
+
 logger = logging.getLogger("markov_predictor")
 logger.addHandler(logging.NullHandler())
 
@@ -86,7 +88,7 @@ class MarkovTable:
         self.table.clear()
 
 
-class MarkovPredictor:
+class MarkovPredictor(PrefetchAlgorithm):
     """
     Markov predictor supporting first-order and second-order transitions.
 
