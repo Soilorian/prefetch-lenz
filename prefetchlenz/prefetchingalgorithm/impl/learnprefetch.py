@@ -15,7 +15,6 @@ Design notes / mapping to Hashemi et al.:
 
 Requirements:
  - PyTorch must be installed (torch).
- - The repo must provide MemoryAccess dataclass in prefetchlenz.prefetchingalgorithm.impl.types
  - PrefetchAlgorithm interface should be available; this class implements the same API.
 
 Approximations (documented in README):

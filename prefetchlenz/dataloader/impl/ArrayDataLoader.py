@@ -1,6 +1,5 @@
 import logging
 from abc import abstractmethod
-from dataclasses import dataclass
 from typing import List
 
 from prefetchlenz.dataloader.dataloader import DataLoader
