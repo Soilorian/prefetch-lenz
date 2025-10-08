@@ -15,13 +15,11 @@ Note:
 import random
 
 import numpy as np
-import pytest
 import torch
 
 from prefetchlenz.prefetchingalgorithm.impl.learnprefetch import (
     CONFIG,
     DeltaLSTMModel,
-    DeltaQuantizer,
     LearnPrefetcher,
     Vocab,
 )
