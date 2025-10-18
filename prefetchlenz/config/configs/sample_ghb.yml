@@ -1,0 +1,52 @@
+# PrefetchLenz Sample Configuration: GHB (Global History Buffer)
+# GHB is a correlation-based prefetcher using global history and delta tracking
+# Best for: Workloads with recurring address sequences, good generalization
+
+algorithm: ghb
+
+# GHB-specific configuration
+algorithm_config:
+  INDEX_TABLE_SIZE: 256           # Size of index table (PC -> history)
+  CORRELATION_TABLE_SIZE: 256     # Correlation table entries
+  GHB_SIZE: 256                   # Global History Buffer size
+  MAX_DELTA: 8                    # Maximum delta for credit tracking
+  CREDIT_DECAY: 0.9               # Decay factor for delta credits
+
+# Logging configuration
+log_file: "prefetchlenz/config/logs/ghb_run.log"
+log_level: INFO
+output_format: both
+
+# ============================================================================
+# HOW TO RUN:
+# ============================================================================
+# From project root directory:
+#
+#   python run.py --config prefetchlenz/config/configs/sample_ghb.yml
+#
+# For larger workloads (more memory):
+#
+#   python run.py --config prefetchlenz/config/configs/sample_ghb.yml \
+#                 --config-override algorithm_config.GHB_SIZE=512
+#
+# ============================================================================
+# ALGORITHM DESCRIPTION:
+# ============================================================================
+# GHB (Global History Buffer) correlates memory access patterns using
+# a global history of all accesses. Key components:
+#
+#   - Index Table: Maps PC to most recent access UID in GHB
+#   - Global History Buffer: Circular buffer of all accesses with pointers
+#   - Correlation Table: Stores address-to-successor correlations and
+#     PC-to-delta correlations with credit tracking
+#   - Outstanding Prefetch Tracker: Tracks in-flight prefetches for feedback
+#
+# Works well for regular, repeating patterns and correlations.
+#
+# Key parameters:
+#   - INDEX_TABLE_SIZE: Larger = track more PCs simultaneously
+#   - GHB_SIZE: Larger = longer history = catch longer-term patterns
+#   - CORRELATION_TABLE_SIZE: Larger = more correlations tracked
+#   - MAX_DELTA: Maximum delta between consecutive addresses
+#   - CREDIT_DECAY: How fast unsuccessful predictions lose confidence
+# ============================================================================

@@ -1,0 +1,49 @@
+# PrefetchLenz Sample Configuration: SMS (Spatial Memory Streaming)
+# SMS detects spatial patterns within memory regions
+# Best for: Complex spatial access patterns, 2D arrays, cache-friendly workloads
+
+algorithm: sms
+
+# SMS-specific configuration
+algorithm_config:
+  FILTER_ENTRIES: 32              # AGT filter size (new accesses)
+  ACCUM_ENTRIES: 64               # AGT accumulation entries (pattern tracking)
+  PHT_NUM_SETS: 256               # Pattern History Table sets
+  PHT_ASSOC: 4                    # PHT associativity
+  PREDICTION_THRESHOLD: 2         # Confidence threshold (2-bit saturating counter)
+
+# Logging configuration
+log_file: "prefetchlenz/config/logs/sms_run.log"
+log_level: INFO
+output_format: both
+
+# ============================================================================
+# HOW TO RUN:
+# ============================================================================
+# From project root directory:
+#
+#   python run.py --config prefetchlenz/config/configs/sample_sms.yml
+#
+# For more verbose output (debug logging):
+#
+#   python run.py --config prefetchlenz/config/configs/sample_sms.yml \
+#                 --log-level DEBUG
+#
+# ============================================================================
+# ALGORITHM DESCRIPTION:
+# ============================================================================
+# SMS (Spatial Memory Streaming) is a sophisticated prefetcher that detects
+# multi-block spatial patterns within memory regions. It uses:
+#
+#   - AGT (Active Generation Table): Filters first accesses and accumulates
+#     patterns for subsequent accesses in the same region
+#   - PHT (Pattern History Table): Stores learned spatial patterns with
+#     confidence counters
+#
+# Key parameters:
+#   - FILTER_ENTRIES: More = track more patterns simultaneously
+#   - ACCUM_ENTRIES: Size of accumulation table for pattern learning
+#   - PHT_NUM_SETS: More sets = fewer collisions, more storage
+#   - PHT_ASSOC: Associativity of PHT (4-way typical)
+#   - PREDICTION_THRESHOLD: Minimum confidence for prefetching (0-3)
+# ============================================================================

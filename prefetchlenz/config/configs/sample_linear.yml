@@ -1,0 +1,39 @@
+# PrefetchLenz Sample Configuration: Linear Algorithm
+# Linear is a simple stride-based prefetcher using hardware stream buffers
+# Best for: Sequential access patterns, simple stride detection
+
+algorithm: linear
+
+# Linear-specific configuration
+algorithm_config:
+  STREAM_BUFFER_SIZE: 32          # Number of stream buffers to maintain
+  PREFETCH_DEGREE: 4              # Lines to prefetch ahead
+
+# Logging configuration
+log_file: "prefetchlenz/config/logs/linear_run.log"
+log_level: INFO
+output_format: both
+
+# ============================================================================
+# HOW TO RUN:
+# ============================================================================
+# From project root directory:
+#
+#   python run.py --config prefetchlenz/config/configs/sample_linear.yml
+#
+# Or with custom log file:
+#
+#   python run.py --config prefetchlenz/config/configs/sample_linear.yml \
+#                 --log-file my_output.log
+#
+# ============================================================================
+# ALGORITHM DESCRIPTION:
+# ============================================================================
+# Linear prefetcher uses hardware stream buffers to detect and prefetch
+# sequential memory access patterns. It's simple, efficient, and works well
+# for linear data structures (arrays, buffers, etc.)
+#
+# Key parameters:
+#   - STREAM_BUFFER_SIZE: More buffers = track more patterns simultaneously
+#   - PREFETCH_DEGREE: Higher = more aggressive prefetching
+# ============================================================================

@@ -1,0 +1,76 @@
+# PrefetchLenz Sample Configuration: LearnCluster (ML-Based)
+# LearnCluster uses k-means clustering + LSTM neural networks
+# Best for: Complex non-linear patterns, high accuracy requirements, offline analysis
+
+algorithm: learncluster
+
+# LearnCluster-specific configuration (ML-based prefetcher)
+algorithm_config:
+  # Clustering configuration
+  NUM_CLUSTERS: 8                 # Number of k-means clusters
+  KMEANS_ITERS: 20                # K-means iterations
+
+  # LSTM model configuration
+  HIDDEN_DIM: 48                  # LSTM hidden dimension
+  TOPK: 4                         # Top-K predictions to return
+
+  # Training/scheduling configuration
+  MAX_OUTSTANDING: 32             # Max outstanding prefetch requests
+  DEVICE: "cpu"                   # "cpu" or "cuda" (if available)
+
+# Logging configuration
+log_file: "prefetchlenz/config/logs/learncluster_run.log"
+log_level: INFO
+output_format: both
+
+# Random seed for reproducibility (ML algorithms are non-deterministic)
+random_seed: 42
+
+# ============================================================================
+# HOW TO RUN:
+# ============================================================================
+# From project root directory:
+#
+#   python run.py --config prefetchlenz/config/configs/sample_learncluster.yml
+#
+# With CUDA GPU acceleration (if available):
+#
+#   python run.py --config prefetchlenz/config/configs/sample_learncluster.yml \
+#                 --config-override algorithm_config.DEVICE=cuda
+#
+# With more clusters for complex patterns:
+#
+#   python run.py --config prefetchlenz/config/configs/sample_learncluster.yml \
+#                 --config-override algorithm_config.NUM_CLUSTERS=16
+#
+# ============================================================================
+# ALGORITHM DESCRIPTION:
+# ============================================================================
+# LearnCluster is a machine learning-based prefetcher combining:
+#
+#   1. K-Means Clustering: Partitions address space into clusters
+#      for pattern locality
+#
+#   2. Per-Cluster Delta Vocabulary: Each cluster learns its own
+#      distribution of address deltas
+#
+#   3. Shared LSTM: Single LSTM model trained on all clusters to predict
+#      next delta given current sequence
+#
+# Advantages:
+#   - High accuracy on complex, non-linear patterns
+#   - Captures address space structure through clustering
+#
+# Disadvantages:
+#   - Requires PyTorch (ML framework)
+#   - Needs offline training phase
+#   - Higher memory and computation overhead
+#   - Non-deterministic (use random_seed for reproducibility)
+#
+# Key parameters:
+#   - NUM_CLUSTERS: More clusters = finer granularity (slower learning)
+#   - KMEANS_ITERS: More iterations = better clustering (slower init)
+#   - HIDDEN_DIM: Larger = model capacity (more memory, slower)
+#   - TOPK: Top-K predictions to prefetch
+#   - DEVICE: "cpu" or "cuda" for GPU acceleration
+# ============================================================================

@@ -44,13 +44,15 @@ class Analyzer:
 
             if idx + 1 < dataSize:
                 next_addr = self.dataloader[idx + 1]
-                if next_addr in pending:
+                # Extract address from MemoryAccess object if needed
+                next_addr_value = next_addr.address if hasattr(next_addr, 'address') else next_addr
+                if next_addr_value in pending:
                     correct += 1
                     prefetch_hit = True
-                    logger.debug(f"Correct: {next_addr}")
+                    logger.debug(f"Correct: {next_addr_value}")
                 else:
                     incorrect += 1
-                    logger.debug(f"Incorrect: {next_addr}")
+                    logger.debug(f"Incorrect: {next_addr_value}")
 
         self.algorithm.close()
         logger.info(f"Correct predictions: {correct}")

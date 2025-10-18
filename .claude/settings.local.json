@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pip:*)",
+      "Bash(python tests/prefetchingalgorithm/test_domino.py:*)",
+      "Bash(python test:*)",
+      "Bash(del test_bingo_simple.py)",
+      "Bash(python -m pytest tests/prefetchingalgorithm/test_indirectmemory.py -v)",
+      "Bash(python tests/prefetchingalgorithm/test_indirectmemory.py:*)",
+      "Bash(python tests/prefetchingalgorithm/test_bestoffset.py:*)",
+      "Bash(set PYTHONPATH=%CD%)",
+      "Bash(export PYTHONPATH=$PWD)",
+      "Bash(python:*)",
+      "Bash(PYTHONPATH=$PWD python tests/prefetchingalgorithm/test_indirectmemory.py)",
+      "Bash(bash:*)",
+      "Read(//c/**)",
+      "Bash($env:PYTHONPATH=\"C:\\Users\\Sahand\\Desktop\\Project\\prefetch-lenz\")",
+      "Bash(cat \"C:/Users/Sahand/Desktop/Project/prefetch-lenz/prefetchlenz/dataloader/dataloader.py\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -1,0 +1,39 @@
+# PrefetchLenz Sample Configuration: BestOffset Algorithm
+# BestOffset tests predefined offsets and selects the best performing one
+# Best for: Regular stride patterns with varying offsets
+
+algorithm: bestoffset
+
+# BestOffset-specific configuration
+algorithm_config:
+  PREFETCH_DEGREE: 4              # Lines to prefetch
+  OFFSET_DELTA: 1                 # Delta between tested offsets
+
+# Logging configuration
+log_file: "prefetchlenz/config/logs/bestoffset_run.log"
+log_level: INFO
+output_format: both
+
+# ============================================================================
+# HOW TO RUN:
+# ============================================================================
+# From project root directory:
+#
+#   python run.py --config prefetchlenz/config/configs/sample_bestoffset.yml
+#
+# Or with different prefetch degree:
+#
+#   python run.py --config prefetchlenz/config/configs/sample_bestoffset.yml \
+#                 --config-override algorithm_config.PREFETCH_DEGREE=8
+#
+# ============================================================================
+# ALGORITHM DESCRIPTION:
+# ============================================================================
+# BestOffset is an offline learning prefetcher that tests predefined offsets
+# (1-256 with prime factors ≤5) and learns which offset works best for each
+# PC (program counter). Very efficient in hardware implementations.
+#
+# Key parameters:
+#   - PREFETCH_DEGREE: Number of lines to prefetch per access
+#   - OFFSET_DELTA: Step size when testing offsets
+# ============================================================================

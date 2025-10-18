@@ -1,0 +1,50 @@
+# PrefetchLenz Sample Configuration: Bingo Prefetcher
+# Bingo is an advanced spatial prefetcher with multiple pattern tables
+# Best for: Complex workloads with diverse access patterns, good accuracy
+
+algorithm: bingo
+
+# Bingo-specific configuration
+algorithm_config:
+  PATTERN_LEN: 32                 # Pattern length in memory accesses
+  REGION_SIZE: 2048               # Memory region size (bytes)
+  PHT_SIZE: 16384                 # Total Pattern History Table size (bytes)
+  PREFETCH_DEGREE: 4              # Lines to prefetch per prediction
+
+# Logging configuration
+log_file: "prefetchlenz/config/logs/bingo_run.log"
+log_level: INFO
+output_format: both
+
+# ============================================================================
+# HOW TO RUN:
+# ============================================================================
+# From project root directory:
+#
+#   python run.py --config prefetchlenz/config/configs/sample_bingo.yml
+#
+# With custom region size (for 4KB regions):
+#
+#   python run.py --config prefetchlenz/config/configs/sample_bingo.yml \
+#                 --config-override algorithm_config.REGION_SIZE=4096
+#
+# ============================================================================
+# ALGORITHM DESCRIPTION:
+# ============================================================================
+# Bingo is a high-performance spatial prefetcher that uses multiple
+# Pattern History Tables (PHTs) to capture different types of patterns:
+#
+#   - PHT indexed by PC+Address (offset in region)
+#   - PHT indexed by PC+Offset (relative offset tracking)
+#   - PHT indexed by Address (memory region patterns)
+#   - PHT indexed by PC only (program-counter based patterns)
+#
+# It maintains a filter table to distinguish prefetch-worthy patterns
+# and achieves high accuracy with manageable memory overhead.
+#
+# Key parameters:
+#   - PATTERN_LEN: Longer = capture more complex patterns (more memory)
+#   - REGION_SIZE: Memory region granularity (typical: 2KB-4KB)
+#   - PHT_SIZE: Total table size (more = better accuracy, more memory)
+#   - PREFETCH_DEGREE: Aggressive prefetching (4-8 typical)
+# ============================================================================

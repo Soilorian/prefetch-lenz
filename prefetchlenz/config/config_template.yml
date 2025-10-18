@@ -1,0 +1,104 @@
+# PrefetchLenz Configuration Template
+# This file demonstrates all available configuration options
+# Copy this file and modify it according to your needs
+
+# ============================================================================
+# ALGORITHM SELECTION (Required)
+# ============================================================================
+# Specify which prefetching algorithm to use
+# Available algorithms: linear, strided, bestoffset, ghb, correlation,
+# markovpredictor, referencepredictiontable, sms, bingo, triage, neural,
+# learncluster, learnprefetch, perceptron, bfetch, domino, ebcp,
+# eventtriggered, feedbackdirected, f_tdc, graph, hds, ipcp, metadata,
+# tempo, temporalmemorystreaming, tcp, triangel, indirectmemory,
+# storeorderedstreamer, dspatch
+algorithm: linear
+
+# ============================================================================
+# ALGORITHM-SPECIFIC CONFIGURATION (Optional)
+# ============================================================================
+# Each algorithm can be fine-tuned with specific parameters
+# The config below will override algorithm defaults
+# Uncomment and modify parameters for your algorithm
+algorithm_config:
+  # Common parameters (most algorithms support these)
+  # PREFETCH_DEGREE: 4              # How many lines to prefetch
+  # LOOKUP_TABLE_SIZE: 256          # Size of internal lookup tables
+  # CONFIDENCE_THRESHOLD: 50        # Confidence threshold percentage
+
+  # Algorithm-specific examples:
+  # Linear:
+  #   STREAM_BUFFER_SIZE: 32
+
+  # BestOffset:
+  #   PREFETCH_DEGREE: 4
+  #   OFFSET_DELTA: 1
+
+  # SMS (Spatial Memory Streaming):
+  #   FILTER_ENTRIES: 32
+  #   ACCUM_ENTRIES: 64
+  #   PHT_NUM_SETS: 256
+
+  # Bingo:
+  #   PATTERN_LEN: 32
+  #   REGION_SIZE: 2048
+  #   PHT_SIZE: 16384
+
+  # GHB (Global History Buffer):
+  #   INDEX_TABLE_SIZE: 256
+  #   CORRELATION_TABLE_SIZE: 256
+
+  # LearnCluster:
+  #   NUM_CLUSTERS: 8
+  #   HIDDEN_DIM: 48
+  #   TOPK: 4
+
+# ============================================================================
+# INPUT DATA CONFIGURATION (Optional)
+# ============================================================================
+# Specify where to load memory access traces from
+# If not specified, synthetic traces will be generated for testing
+input_trace: null
+# Example: input_trace: "data/trace.bin"
+
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+# Log file output path
+# If not specified, logs will only go to console
+log_file: "prefetchlenz/config/logs/prefetchlenz.log"
+
+# Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_level: INFO
+
+# Output format: console, file, or both
+# - console: Print logs to terminal only
+# - file: Write to log file only (requires log_file)
+# - both: Print to terminal AND write to log file
+output_format: both
+
+# ============================================================================
+# ADVANCED OPTIONS
+# ============================================================================
+# Number of iterations to run
+max_iterations: null
+
+# Random seed for reproducibility (for ML-based algorithms)
+# Set to null for non-deterministic behavior
+random_seed: 42
+
+# Enable debug output for detailed algorithm internals
+debug_output: false
+
+# ============================================================================
+# USAGE EXAMPLES
+# ============================================================================
+# To use this configuration file:
+#   python run.py --config config_template.yml
+#
+# Or copy and modify one of the sample configs:
+#   cp config/configs/sample_linear.yml my_config.yml
+#   python run.py --config my_config.yml
+#
+# To list available algorithms:
+#   python run.py --list-algorithms
