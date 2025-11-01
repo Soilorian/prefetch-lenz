@@ -9,7 +9,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Set, Tuple
 
-from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.temporal_streaming")

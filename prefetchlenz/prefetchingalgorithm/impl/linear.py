@@ -9,10 +9,10 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Set
 
-from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.access.linearmemoryaccess import (
     LinearMemoryAccess,
 )
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.linearizing_hw")
@@ -29,55 +29,64 @@ logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.linearizing_hw")
 
 @dataclass
 class Stream:
-    """
-    Emulates a small hardware stream buffer entry.
+    """Emulates a small hardware stream buffer entry.
 
-    Fields:
-      - id: stream identifier
-      - buf: deque of predicted addresses in logical order (front == earliest)
-      - confidence: small saturating counter used to decide whether to issue prefetches
-      - last_issued_index: index into the buffer of the last element we issued (so we issue forward)
+    Attributes:
+        id: Stream identifier.
+        buf: Deque of predicted addresses in logical order (front == earliest).
+        confidence: Small saturating counter used to decide whether to issue prefetches.
+        last_issued_index: Index into the buffer of the last element we issued
+            (so we issue forward). -1 means nothing issued yet.
     """
 
     id: int
     buf: Deque[int] = field(default_factory=deque)
     confidence: int = 0
-    last_issued_index: int = -1  # -1 means nothing issued yet
+    last_issued_index: int = -1  # -1 means nothing issued yet.
 
-    def push(self, addr: int, maxlen: int):
+    def push(self, addr: int, maxlen: int) -> None:
+        """Push address into stream buffer.
+
+        Args:
+            addr: Address to push.
+            maxlen: Maximum buffer length.
+        """
         if addr not in self.buf:
             if len(self.buf) >= maxlen:
-                # mimic small hardware stream buffer by popping left (earliest)
+                # Mimic small hardware stream buffer by popping left (earliest).
                 self.buf.popleft()
-                # shift last_issued_index left by one if > -1
+                # Shift last_issued_index left by one if > -1.
                 if self.last_issued_index >= 0:
                     self.last_issued_index = max(-1, self.last_issued_index - 1)
             self.buf.append(addr)
 
     def available_after_last_issued(self) -> List[int]:
-        """Return addresses after last issued index in logical order."""
+        """Return addresses after last issued index in logical order.
+
+        Returns:
+            List of addresses after the last issued index.
+        """
         start = self.last_issued_index + 1
         return list(self.buf)[start:]
 
 
 @dataclass
 class LinearizingPrefetcher(PrefetchAlgorithm):
-    """
-    Linearizing Prefetcher with hardware-like stream buffers and adaptive control.
+    """Linearizing prefetcher with hardware-like stream buffers and adaptive control.
 
-    This class extends the original software linearizer by emulating the *hardware*
-    prefetcing components described in the Irregular Stream Buffers paper:
-      - small per-stream buffer (stream buffer entry),
-      - tag table (to avoid duplicate prefetches),
-      - outstanding prefetch tracking,
-      - confidence counters to avoid issuing prefetches for noisy streams,
-      - adaptive controller that tweaks prefetch_degree using observed counters.
+    This class extends the original software linearizer by emulating the hardware
+    prefetching components described in the Irregular Stream Buffers paper:
+        - Small per-stream buffer (stream buffer entry).
+        - Tag table (to avoid duplicate prefetches).
+        - Outstanding prefetch tracking.
+        - Confidence counters to avoid issuing prefetches for noisy streams.
+        - Adaptive controller that tweaks prefetch_degree using observed counters.
 
-    NOTE: This is a software emulation / runtime autotuner. To use *real* hardware
+    Note: This is a software emulation / runtime autotuner. To use real hardware
     counters replace the internal counters (cache_misses, prefetch_hits, ...) with
     readings from perf/PAPI/etc.
 
-    Reference: original uploaded paper. :contentReference[oaicite:2]{index=2}
+    Reference: original uploaded paper.
     """
 
     # tunables (defaults)
@@ -109,7 +118,8 @@ class LinearizingPrefetcher(PrefetchAlgorithm):
     hw_prefetch_hits: int = field(default=0, init=False)
     hw_cache_misses: int = field(default=0, init=False)
 
-    def init(self):
+    def init(self) -> None:
+        """Initialize or reset prefetcher state."""
         self.streams.clear()
         self.addr_to_stream.clear()
         self.next_stream_id = 0
@@ -121,7 +131,8 @@ class LinearizingPrefetcher(PrefetchAlgorithm):
         self.hw_cache_misses = 0
         logger.debug("LinearizingPrefetcher (HW-emulation) initialized.")
 
-    def close(self):
+    def close(self) -> None:
+        """Clean up prefetcher state."""
         logger.info(
             "LinearizingPrefetcher closed. Streams=%d outstanding=%d prefetch_reqs=%d hits=%d misses=%d",
             len(self.streams),
@@ -134,12 +145,19 @@ class LinearizingPrefetcher(PrefetchAlgorithm):
     # ---------- public runtime hooks ----------
 
     def progress(self, access: LinearMemoryAccess, prefetch_hit: bool) -> List[int]:
-        """
-        Called for every memory access seen by the monitor.
+        """Process a memory access and return prefetch requests.
 
-        Returns a list of addresses we request to prefetch (these are *requested*).
+        Called for every memory access seen by the monitor.
+        Returns a list of addresses we request to prefetch (these are requested).
         The caller should call `prefetch_completed(addr)` when a prefetch finishes,
         and `notify_prefetch_hit(addr)` when a prefetch results in a hit.
+
+        Args:
+            access: Memory access event.
+            prefetch_hit: Whether this access was a prefetch hit.
+
+        Returns:
+            List of addresses to prefetch.
         """
         addr = access.address
         self.total_progress_calls += 1
@@ -187,20 +205,28 @@ class LinearizingPrefetcher(PrefetchAlgorithm):
 
         return prefetches
 
-    def prefetch_completed(self, addr: int):
-        """Call after a prefetch has completed (line filled into cache)."""
+    def prefetch_completed(self, addr: int) -> None:
+        """Call after a prefetch has completed (line filled into cache).
+
+        Args:
+            addr: Address that was prefetched.
+        """
         if addr in self.outstanding:
             self.outstanding.discard(addr)
-        # when a prefetch completes and it was tracked in tag table, we can remove the tag entry
+        # When a prefetch completes and it was tracked in tag table, we can remove the tag entry.
         self.tag_table.discard(addr)
         logger.debug(
             "Prefetch completed for addr=%d outstanding=%d", addr, len(self.outstanding)
         )
 
-    def notify_prefetch_hit(self, addr: int):
-        """Call when an earlier prefetch resulted in a hit (observed by monitor)."""
+    def notify_prefetch_hit(self, addr: int) -> None:
+        """Call when an earlier prefetch resulted in a hit (observed by monitor).
+
+        Args:
+            addr: Address that was prefetched and hit.
+        """
         if addr in self.outstanding:
-            # treat as hit: clear outstanding and increase hit counter
+            # Treat as hit: clear outstanding and increase hit counter.
             self.outstanding.discard(addr)
         if addr in self.tag_table:
             self.tag_table.discard(addr)
@@ -210,12 +236,18 @@ class LinearizingPrefetcher(PrefetchAlgorithm):
         )
 
     def _issue_prefetches_hw(self, stream_id: int) -> List[int]:
-        """
-        Issue prefetches for a stream following a hardware-like policy:
-        - only issue forward addresses after last_issued_index
-        - require a minimal confidence unless we are forced
-        - consult tag_table and outstanding to avoid duplicates
-        - update hw_prefetch_requests counter
+        """Issue prefetches for a stream following a hardware-like policy.
+
+        Only issues forward addresses after last_issued_index.
+        Requires a minimal confidence unless we are forced.
+        Consults tag_table and outstanding to avoid duplicates.
+        Updates hw_prefetch_requests counter.
+
+        Args:
+            stream_id: Stream identifier.
+
+        Returns:
+            List of addresses to prefetch.
         """
         s = self.streams.get(stream_id)
         if not s:
@@ -259,12 +291,12 @@ class LinearizingPrefetcher(PrefetchAlgorithm):
             logger.info("Stream %d issuing prefetches: %s", stream_id, issued)
         return issued
 
-    def _adapt_prefetching_policy(self):
-        """
-        Simple adaptation:
-         - compute prefetch hit ratio = hits / requests
-         - if hit ratio too low -> reduce degree (reduce pollution)
-         - if hit ratio high and misses still high -> increase degree
+    def _adapt_prefetching_policy(self) -> None:
+        """Adapt prefetching policy based on hit ratio.
+
+        Computes prefetch hit ratio = hits / requests.
+        If hit ratio too low, reduces degree (reduce pollution).
+        If hit ratio high and misses still high, increases degree.
         """
         if self.hw_prefetch_requests == 0:
             logger.debug("No prefetch requests, skipping adaptation.")

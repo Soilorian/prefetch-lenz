@@ -1,19 +1,26 @@
 """
-Domino: Temporal prefetcher implementation (defaults used where paper values are absent).
+Domino Temporal Prefetcher
 
-Implements:
- - MHT1: 1-miss history table (maps last miss addr -> predicted next miss)
- - MHT2: 2-miss history table (maps last-two-misses signature -> predicted next miss)
- - MRB: Miss Resolution / suppression buffer to avoid immediate re-issue
- - Scheduler: outstanding prefetch cap + MRB suppression
- - DominoPrefetcher: top-level class implementing PrefetchAlgorithm interface
+Algorithm: Domino prefetcher implementation (defaults used where paper values are absent).
 
-Notes:
- - This is a temporal prefetcher: it predicts addresses based on recent miss sequences.
- - Configurable parameters are in CONFIG at the top.
- - Storage is implemented using pure-Python dicts for determinism and easy testing.
-   If you must use your project's Cache storage backend, see the README's "Integration"
-   section — a short adapter is required and the code documents where to plug it.
+This is a temporal prefetcher that predicts future memory addresses based on recent
+miss sequences. It maintains two miss history tables (MHT1 and MHT2) that track
+patterns in miss address sequences and use them to predict subsequent misses.
+
+Key Components:
+- MHT1: 1-miss history table mapping last miss address to predicted next miss
+- MHT2: 2-miss history table mapping (prev2, prev1) miss signature to predicted next miss
+- MRB: Miss Resolution Buffer for suppressing immediate re-issue of prefetched addresses
+- Scheduler: Caps outstanding prefetches and manages MRB suppression
+- DominoPrefetcher: Top-level prefetcher coordinating all components
+
+How it works:
+1. Track recent miss sequence (prev2, prev1, current)
+2. Query MHT2 first for predictions based on (prev2, prev1) pattern
+3. If MHT2 doesn't yield enough, query MHT1 for predictions based on prev1
+4. Update MHT tables with observed transitions, strengthening on prefetch hits
+5. Use scheduler to issue prefetches while respecting outstanding limits and MRB
+6. Confidence counters track prediction quality and decay over time
 """
 
 from __future__ import annotations
@@ -22,11 +29,11 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-# Import MemoryAccess from repo types. The repo must provide this dataclass.
-# Example shape required: MemoryAccess(address: int, pc: int)
-from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess  # user-supplied
+from prefetchlenz.prefetchingalgorithm.impl._shared import MRB, Scheduler
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
+from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
-logger = logging.getLogger("prefetchlenz.prefetchingalgorithm.impl.domino")
+logger = logging.getLogger(__name__)
 
 # -------------------------
 # Configuration variables
@@ -198,123 +205,29 @@ class MHT2:
                 ent.conf -= 1
 
 
-class MRB:
-    """Miss Resolution Buffer / short-term suppression.
-
-    Keeps a small recent set of addresses (capped) to avoid re-issuing them immediately.
-    Implemented as an ordered list for deterministic eviction.
-    """
-
-    def __init__(self, size: int = CONFIG["MRB_SIZE"]):
-        self.size = size
-        self.buf: List[int] = []
-
-    def insert(self, addr: int) -> None:
-        if addr in self.buf:
-            # move to back (most recent)
-            self.buf.remove(addr)
-            self.buf.append(addr)
-            return
-        if len(self.buf) >= self.size:
-            ev = self.buf.pop(0)
-            logger.debug("MRB: evict %x", ev)
-        self.buf.append(addr)
-        logger.debug("MRB: insert %x", addr)
-
-    def contains(self, addr: int) -> bool:
-        return addr in self.buf
-
-    def remove(self, addr: int) -> None:
-        if addr in self.buf:
-            self.buf.remove(addr)
-
-    def clear(self) -> None:
-        self.buf.clear()
-
-
-class Scheduler:
-    """Scheduler managing outstanding prefetches, MRB suppression, and issuance.
-
-    - outstanding: set of addresses currently outstanding
-    - issue(candidates) -> list of addresses actually issued (subject to caps and MRB)
-    - credit(addr): called when a prefetched address is used, to remove from outstanding
-    """
-
-    def __init__(
-        self,
-        max_outstanding: int = CONFIG["MAX_OUTSTANDING"],
-        mrbsz: int = CONFIG["MRB_SIZE"],
-    ):
-        self.max_outstanding = max_outstanding
-        self.outstanding: List[int] = []  # maintain order for deterministic behavior
-        self.mrb = MRB(size=mrbsz)
-
-    def can_issue_more(self) -> bool:
-        return len(self.outstanding) < self.max_outstanding
-
-    def issue(self, candidates: List[int]) -> List[int]:
-        """Issue prefetches from the candidate list. Respect MRB, outstanding cap, and avoid duplicates."""
-        issued = []
-        for a in candidates:
-            if len(issued) >= PREFETCH_DEGREE:
-                break
-            if a in self.outstanding:
-                continue
-            if self.mrb.contains(a):
-                continue
-            if not self.can_issue_more():
-                break
-            # issue
-            self.outstanding.append(a)
-            issued.append(a)
-            # also insert into MRB to prevent immediate reissue on same cycle
-            self.mrb.insert(a)
-            logger.info("Scheduler: issue prefetch %x", a)
-        return issued
-
-    def credit(self, addr: int) -> None:
-        """Called when a prefetched address is used; remove from outstanding and keep in MRB to suppress re-issue."""
-        if addr in self.outstanding:
-            self.outstanding.remove(addr)
-            logger.debug("Scheduler: credit outstanding for %x", addr)
-        # keep addr in MRB so it won't be re-issued immediately (MRB insertion will be idempotent)
-        self.mrb.insert(addr)
-
-    def remove_from_mrb(self, addr: int) -> None:
-        self.mrb.remove(addr)
-
-    def clear(self) -> None:
-        self.outstanding.clear()
-        self.mrb.clear()
-
-
 # -------------------------
 # DominoPrefetcher: top-level
 # -------------------------
 
 
-class DominoPrefetcher:
+class DominoPrefetcher(PrefetchAlgorithm):
     """Temporal prefetcher implementing Domino-like behavior.
 
-    Public methods expected by the framework:
-      - init()
-      - progress(access: MemoryAccess, prefetch_hit: bool) -> List[int]
-      - close()
+    Uses MHT1 and MHT2 to track miss history and generate temporal predictions.
     """
 
     def __init__(self, config: Optional[Dict] = None):
-        # merge user config if provided
         if config:
             for k, v in config.items():
                 if k in CONFIG:
                     CONFIG[k] = v
-        # create components
+
         self.mht1 = MHT1(size=CONFIG["MHT1_SIZE"])
         self.mht2 = MHT2(size=CONFIG["MHT2_SIZE"], degree=CONFIG["DEGREE_MHT2"])
         self.scheduler = Scheduler(
-            max_outstanding=CONFIG["MAX_OUTSTANDING"], mrbsz=CONFIG["MRB_SIZE"]
+            max_outstanding=CONFIG["MAX_OUTSTANDING"],
+            mrbsz=CONFIG["MRB_SIZE"],
         )
-        # track recent misses: prev1 is-most-recent miss, prev2 is previous to that
         self.prev1: Optional[int] = None
         self.prev2: Optional[int] = None
         self.initialized = False
@@ -327,91 +240,99 @@ class DominoPrefetcher:
         self.initialized = True
 
     def progress(self, access: MemoryAccess, prefetch_hit: bool) -> List[int]:
-        """
-        Handle an access event:
-         - If prefetch_hit: credit scheduler with that address (feedback)
-         - If this access is a miss (the framework will indicate misses by calling with prefetch_hit maybe False
-           but we need an explicit 'is_miss' signal to be fully faithful. Here we treat each access as potential miss
-           trigger when progress is invoked — tests will call it accordingly.)
-         - Use prev1/prev2 history to consult MHT2 and MHT1 to produce candidate prefetch addresses.
-         - Issue via scheduler (which suppresses via MRB and caps outstanding).
-        Returns list of addresses actually issued as prefetches.
+        """Handle an access event.
+
+        If prefetch_hit is True, credit scheduler with that address (feedback).
+        If this access is a miss, use prev1/prev2 history to consult MHT2 and MHT1
+        to produce candidate prefetch addresses. Issue via scheduler which suppresses
+        via MRB and caps outstanding prefetches.
+
+        Note: The framework indicates misses by calling with prefetch_hit=False.
+        We treat each access as a potential miss trigger when progress is invoked.
+        Tests will call it accordingly.
+
+        Args:
+            access: The current memory access.
+            prefetch_hit: Whether this access was a prefetch hit.
+
+        Returns:
+            List of addresses actually issued as prefetches.
         """
         if not self.initialized:
             self.init()
 
-        addr = access.address
-        issued: List[int] = []
+        current_address = access.address
 
-        # If this access is the result of a prefetch (prefetch_hit True), credit scheduler
         if prefetch_hit:
-            logger.debug("Domino: prefetch_hit for %x", addr)
-            self.scheduler.credit(addr)
-            # update MHTs: a successful prefetch confirms the last mapping (strengthen)
-            if self.prev1 is not None:
-                # strengthen MHT1 mapping prev1 -> addr
-                self.mht1.update(self.prev1, addr, strengthen=True)
-            if self.prev2 is not None and self.prev1 is not None:
-                self.mht2.update(self.prev2, self.prev1, addr, strengthen=True)
-            # We do not produce new prefetches on a prefetch_hit event beyond crediting.
+            self._handle_prefetch_hit(current_address)
             return []
 
-        # Otherwise, assume this is a demand access; in Domino the miss stream is the trigger.
-        # For unit tests we will treat calls to progress(...) as miss-triggered training events.
+        candidates = self._generate_prefetch_candidates()
+        issued = self.scheduler.issue(candidates)
+        self._update_history_and_tables(current_address)
+        return issued
 
-        # 1) Query MHT2 using (prev2, prev1) if available
-        candidates: List[int] = []
+    def _handle_prefetch_hit(self, address: int) -> None:
+        """Handle prefetch hit by crediting scheduler and strengthening MHTs."""
+        logger.debug("Domino: prefetch_hit for %x", address)
+        self.scheduler.credit(address)
+        if self.prev1 is not None:
+            self.mht1.update(self.prev1, address, strengthen=True)
         if self.prev2 is not None and self.prev1 is not None:
-            ent2 = self.mht2.get(self.prev2, self.prev1)
-            if ent2 and ent2.predicted:
-                # Use predictions in order, but respect conf threshold (we use conf >=1 conservatively)
-                for p in ent2.predicted:
+            self.mht2.update(self.prev2, self.prev1, address, strengthen=True)
+
+    def _generate_prefetch_candidates(self) -> List[int]:
+        """Generate prefetch candidates by querying MHT2 and MHT1."""
+        candidates: List[int] = []
+
+        if self.prev2 is not None and self.prev1 is not None:
+            mht2_entry = self.mht2.get(self.prev2, self.prev1)
+            if mht2_entry and mht2_entry.predicted:
+                for pred in mht2_entry.predicted:
                     if len(candidates) >= CONFIG["DEGREE_MHT2"]:
                         break
-                    if ent2.conf > 0:
-                        candidates.append(p)
+                    if mht2_entry.conf > 0:
+                        candidates.append(pred)
                 logger.debug(
                     "Domino: MHT2 lookup produced %d candidates", len(candidates)
                 )
 
-        # 2) Query MHT1 using prev1 (if MHT2 did not yield enough)
         if len(candidates) < CONFIG["DEGREE_MHT2"] and self.prev1 is not None:
-            ent1 = self.mht1.get(self.prev1)
-            if ent1 and ent1.conf > 0:
-                candidates.append(ent1.predicted)
-                logger.debug("Domino: MHT1 lookup added pred %x", ent1.predicted)
+            mht1_entry = self.mht1.get(self.prev1)
+            if mht1_entry and mht1_entry.conf > 0:
+                candidates.append(mht1_entry.predicted)
+                logger.debug("Domino: MHT1 lookup added pred %x", mht1_entry.predicted)
 
-        # Limit total candidates and remove duplicates (preserve order)
+        return self._deduplicate_candidates(candidates)
+
+    def _deduplicate_candidates(self, candidates: List[int]) -> List[int]:
+        """Remove duplicates while preserving order."""
         seen = set()
         filtered = []
-        for c in candidates:
-            if c not in seen:
-                filtered.append(c)
-                seen.add(c)
-        candidates = filtered[:PREFETCH_DEGREE]
+        for candidate in candidates:
+            if candidate not in seen:
+                filtered.append(candidate)
+                seen.add(candidate)
+        return filtered[:PREFETCH_DEGREE]
 
-        # 3) Ask scheduler to issue them (scheduler does MRB and outstanding checks)
-        issued = self.scheduler.issue(candidates)
-
-        # 4) Update MHTs with the observed transition: prev1 -> addr and (prev2, prev1) -> addr
+    def _update_history_and_tables(self, current_address: int) -> None:
+        """Update MHT tables and advance miss history."""
         if self.prev1 is not None:
-            self.mht1.update(self.prev1, addr, strengthen=False)
+            self.mht1.update(self.prev1, current_address, strengthen=False)
         if self.prev2 is not None and self.prev1 is not None:
-            self.mht2.update(self.prev2, self.prev1, addr, strengthen=False)
+            self.mht2.update(self.prev2, self.prev1, current_address, strengthen=False)
 
-        # 5) Advance history: shift prevs
         self.prev2 = self.prev1
-        self.prev1 = addr
-
-        return issued
+        self.prev1 = current_address
 
     def close(self) -> None:
+        """Reset prefetcher state."""
         logger.info("DominoPrefetcher.close")
-        # reset
         self.mht1 = MHT1(size=CONFIG["MHT1_SIZE"])
         self.mht2 = MHT2(size=CONFIG["MHT2_SIZE"], degree=CONFIG["DEGREE_MHT2"])
         self.scheduler = Scheduler(
-            max_outstanding=CONFIG["MAX_OUTSTANDING"], mrbsz=CONFIG["MRB_SIZE"]
+            max_outstanding=CONFIG["MAX_OUTSTANDING"],
+            mrbsz=CONFIG["MRB_SIZE"],
         )
         self.prev1 = None
         self.prev2 = None

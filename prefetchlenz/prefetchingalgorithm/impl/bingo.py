@@ -68,12 +68,15 @@ def region_offset(block_number: int) -> int:
 
 
 def rotate_pattern(pattern: List[bool], n: int) -> List[bool]:
-    """Rotate pattern by n positions (left if n>0, right if n<0)."""
+    """Rotate pattern by n positions (right if n>0, left if n<0)."""
     if not pattern:
         return pattern
     length = len(pattern)
     n = n % length
-    return pattern[n:] + pattern[:n]
+    if n == 0:
+        return pattern
+    # Right rotation: shift elements to the right
+    return pattern[-n:] + pattern[:-n]
 
 
 # ----------------------
@@ -376,8 +379,19 @@ class PatternHistoryTable:
         return key
 
     def find(self, pc: int, address: int) -> Optional[List[bool]]:
-        """Find pattern for PC and address."""
-        key = self._build_key(pc, address)
+        """Find pattern for PC and address.
+
+        When addr_width > 0, normalize address to block boundary for key lookup.
+        Then rotate pattern based on address offset.
+        """
+        if self.addr_width == 0:
+            # PC-only lookup: build key with address=0 for lookup
+            key = self._build_key(pc, 0)
+        else:
+            # Normalize address to block boundary for consistent lookup
+            normalized_addr = (address // self.pattern_len) * self.pattern_len
+            key = self._build_key(pc, normalized_addr)
+
         entry = self.cache.find(key)
         if entry is None:
             return None
@@ -388,12 +402,18 @@ class PatternHistoryTable:
         return rotated
 
     def insert(self, pc: int, address: int, pattern: List[bool]) -> None:
-        """Insert pattern for PC and address."""
-        # Rotate pattern to be offset-independent
+        """Insert pattern for PC and address.
+
+        When addr_width > 0, normalize address to block boundary for key.
+        Pattern is stored rotated to be offset-independent.
+        """
+        # Rotate pattern to be offset-independent (normalized to address=0)
         offset = address % self.pattern_len
         rotated = rotate_pattern(pattern, -offset)
 
-        key = self._build_key(pc, address)
+        # For lookup consistency, normalize address to block boundary
+        normalized_addr = (address // self.pattern_len) * self.pattern_len
+        key = self._build_key(pc, normalized_addr)
         entry = PatternHistoryTableEntry(pattern=rotated)
         self.cache.insert(key, entry)
         logger.debug(f"PHT: insert key {key:#x} (pc={pc:#x}, addr={address:#x})")

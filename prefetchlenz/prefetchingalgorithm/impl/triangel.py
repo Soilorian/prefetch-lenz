@@ -1,18 +1,19 @@
 """
 Triangel: A High-Performance, Accurate, Timely On-Chip Temporal Prefetcher by Ainsworth et al.
+This variant consistently uses the project's Cache class for Markov metadata storage.
 """
 
 from __future__ import annotations
 
 import logging
 import random
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from collections import deque
+from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Tuple
 
 from prefetchlenz.cache.Cache import Cache
 from prefetchlenz.cache.replacementpolicy.impl.hawkeye import HawkeyeReplacementPolicy
-from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 from prefetchlenz.util.size import Size
 
@@ -20,29 +21,22 @@ logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.impl.triangel")
 logger.addHandler(logging.NullHandler())
 
 
-# ----------------------------- Triangel Structures -----------------------------
-
-
 @dataclass
 class TriangelMeta:
-    """Compressed Markov entry payload (neighbor + 1-bit confidence)."""
-
     neighbor: int
-    conf: int = 0  # 0/1: replace only if 0, set to 1 on agreement
+    conf: int = 0
 
 
 @dataclass
 class TrainEntry:
-    """Per-PC training-row (compact per-paper fields)."""
-
     pc_tag: int
     last0: Optional[int] = None
     last1: Optional[int] = None
     time: int = 0
-    reuse_conf: int = 0  # 4-bit scale [0..15]
+    reuse_conf: int = 0
     patt_base: int = 8
     patt_high: int = 8
-    sample_rate: int = 8  # 0..15
+    sample_rate: int = 8
     lookahead2: bool = False
 
 
@@ -84,14 +78,9 @@ class HistorySampler:
 
 
 class SecondChanceSampler:
-    """
-    FIFO-second-chance buffer used to credit near-miss targets.
-    Stores (target -> (pc_tag, deadline_ts)). Consumed on hit.
-    """
-
     def __init__(self, cap: int = 64):
         self.cap = cap
-        self.q: Deque[Tuple[int, int, int]] = deque()  # (target, pc_tag, deadline)
+        self.q: Deque[Tuple[int, int, int]] = deque()
         self.index: Dict[int, Tuple[int, int]] = {}
 
     def put(self, target: int, pc_tag: int, deadline: int):
@@ -111,17 +100,12 @@ class SecondChanceSampler:
         return (rec_pc == pc_tag) and (now <= deadline)
 
     def age_out(self, now: int):
-        # remove expired entries
         while self.q and (self.q[0][2] < now or self.q[0][0] not in self.index):
             t, _, _ = self.q.popleft()
             self.index.pop(t, None)
 
 
 class MetadataReuseBuffer:
-    """
-    Tiny set-assoc MRB to cache Markov lookups.
-    """
-
     def __init__(self, sets: int = 128, ways: int = 2):
         assert sets > 0 and ways > 0
         self.sets = sets
@@ -137,7 +121,7 @@ class MetadataReuseBuffer:
         s = self._set(key)
         for k, meta in list(self.lines[s]):
             if k == key:
-                # move-to-back (MRU)
+                # move-to-back MRU
                 self.lines[s].remove((k, meta))
                 self.lines[s].append((k, meta))
                 return meta
@@ -155,21 +139,7 @@ class MetadataReuseBuffer:
         self.lines[s].append((key, meta))
 
 
-# --------------------------------- Prefetcher ----------------------------------
-
-
 class TriangelPrefetcher(PrefetchAlgorithm):
-    """
-    Compact Triangel-like prefetcher.
-
-    - PC-local training rows with Last0/Last1 and confidence counters.
-    - History sampler + second-chance sampler for sampled reinforcement.
-    - Markov metadata stored in provided Cache as TriangelMeta.
-    - MetadataReuseBuffer (MRB) to avoid repeated L3/cache lookups during chained walks.
-    - Adaptive lookahead (1 or 2) and degree selection based on patt_base/patt_high.
-    """
-
-    # bias constants (paper-inspired)
     BASE_UP, BASE_DOWN = 1, 2
     HIGH_UP, HIGH_DOWN = 1, 5
 
@@ -192,7 +162,6 @@ class TriangelPrefetcher(PrefetchAlgorithm):
         replacement_policy_cls=HawkeyeReplacementPolicy,
     ):
         self.num_ways = max(1, int(num_ways))
-        # approximate sets by dividing configured bytes by ways (keeps prior behavior)
         self.num_sets = max(1, int(init_size.bytes) // max(1, self.num_ways))
         self.min_size = (
             int(min_size) if isinstance(min_size, int) else int(min_size.bytes)
@@ -201,13 +170,13 @@ class TriangelPrefetcher(PrefetchAlgorithm):
             int(max_size) if isinstance(max_size, int) else int(max_size.bytes)
         )
 
+        # Use provided Cache class. Policy instances are per-set inside Cache.
         self.cache = Cache(
             num_sets=self.num_sets,
             num_ways=self.num_ways,
             replacement_policy_cls=replacement_policy_cls,
         )
 
-        # state
         self.training: Dict[int, TrainEntry] = {}
         self.sampler = HistorySampler(sampler_sets, sampler_ways)
         self.scs = SecondChanceSampler(scs_cap)
@@ -215,7 +184,6 @@ class TriangelPrefetcher(PrefetchAlgorithm):
         self.max_degree = max(1, int(max_degree))
         self.l2_lines_hint = int(l2_lines_hint)
 
-        # adaptation counters
         self.resize_epoch = int(resize_epoch)
         self.grow_thresh = float(grow_thresh)
         self.shrink_thresh = float(shrink_thresh)
@@ -238,8 +206,8 @@ class TriangelPrefetcher(PrefetchAlgorithm):
             scs_cap,
         )
 
-    # Lifecycle
     def init(self):
+        # Use Cache.flush to keep consistent
         self.cache.flush()
         self.training.clear()
         self.meta_accesses = 0
@@ -261,7 +229,6 @@ class TriangelPrefetcher(PrefetchAlgorithm):
         )
         self.cache.flush()
 
-    # Core
     def progress(self, access: MemoryAccess, prefetch_hit: bool) -> List[int]:
         addr, pc = int(access.address), int(access.pc)
         preds: List[int] = []
@@ -269,7 +236,6 @@ class TriangelPrefetcher(PrefetchAlgorithm):
         if prefetch_hit:
             self.useful_prefetches += 1
             if self.prev_access is not None:
-                # inform replacement policy of a useful prefetch (if cache.put tracked)
                 try:
                     self.cache.prefetch_hit(int(self.prev_access.address))
                 except Exception:
@@ -277,27 +243,22 @@ class TriangelPrefetcher(PrefetchAlgorithm):
 
         te = self._train_row(pc)
 
-        # 1) lookup metadata and possibly issue prefetch chain
         meta = self._lookup_markov(addr)
         if meta is not None and self._allow_issue(te):
             preds = self._prefetch_chain(addr, meta, te)
             self.issued_prefetches += len(preds)
 
-        # 2) shift training registers and advance time
         te.time += 1
         prev_x = te.last0
         te.last1 = te.last0
         te.last0 = addr
 
-        # 3) update samplers and confidences
         self._update_samplers_and_conf(te, prev_x, addr)
 
-        # 4) train markov if conditions permit
         if prev_x is not None and self._allow_train(te):
             index = te.last1 if te.lookahead2 and te.last1 is not None else prev_x
             self._train_markov(index, addr)
 
-        # 5) adaptation window
         self.meta_accesses += 1
         if self.meta_accesses >= self.resize_epoch:
             self._maybe_resize()
@@ -309,14 +270,17 @@ class TriangelPrefetcher(PrefetchAlgorithm):
         self.prev_access = access
         return preds
 
-    # Markov / MRB helpers
+    # Markov / MRB helpers using Cache API consistently
     def _lookup_markov(self, key: int) -> Optional[TriangelMeta]:
+        # 1) MRB quick check
         m = self.mrb.get(key)
         if m is not None:
             self.prefetch_chain_hits += 1
             return m
+        # 2) main cache
         m = self.cache.get(key)
         if isinstance(m, TriangelMeta):
+            # populate MRB to speed up subsequent chained lookups
             self.mrb.put(key, m)
             return m
         return None
@@ -332,26 +296,21 @@ class TriangelPrefetcher(PrefetchAlgorithm):
                 cur.neighbor = target
             else:
                 cur.conf = 0
+        # use Cache.put to insert/update metadata
         self.cache.put(index, cur)
+        # also update MRB so chained walk sees newest value
         self.mrb.put(index, cur)
         logger.debug("Markov train: [%#x] -> [%#x] conf=%d", index, target, cur.conf)
 
     def _prefetch_chain(
         self, start_key: int, meta: TriangelMeta, te: TrainEntry
     ) -> List[int]:
-        """
-        Walk the Markov chain and collect up to `degree` targets.
-        If the chain contains at least two connected entries we opportunistically
-        include the second hop even when degree==1. This makes manual training
-        tests (where metadata is injected by tests) behave intuitively.
-        """
         preds: List[int] = []
         degree = self._select_degree(te)
         seen = set()
         cur_meta = meta
         steps = 0
 
-        # collect up to `degree` hops
         while steps < degree:
             tgt = cur_meta.neighbor
             if tgt in seen:
@@ -364,9 +323,6 @@ class TriangelPrefetcher(PrefetchAlgorithm):
             cur_meta = nxt
             steps += 1
 
-        # Opportunistic extra hop: if we collected exactly 1 hop but the chain
-        # contains a second linked entry, append it so tests that pre-populate
-        # two chained entries observe both targets.
         if len(preds) == 1 and degree == 1:
             first_tgt = preds[0]
             nxt_meta = self._lookup_markov(first_tgt)
@@ -386,7 +342,7 @@ class TriangelPrefetcher(PrefetchAlgorithm):
             )
         return preds
 
-    # Sampling and confidence update
+    # Sampling & update logic unchanged
     def _update_samplers_and_conf(
         self, te: TrainEntry, prev_x: Optional[int], curr: int
     ):
@@ -408,7 +364,7 @@ class TriangelPrefetcher(PrefetchAlgorithm):
                 te.patt_high = min(15, te.patt_high + self.HIGH_UP)
             else:
                 self.scs.put(target_y, te.pc_tag, te.time + self.l2_lines_hint)
-        # second-chance hit
+
         if self.scs.hit(curr, te.pc_tag, te.time):
             te.patt_base = min(15, te.patt_base + self.BASE_UP)
             te.patt_high = min(15, te.patt_high + self.HIGH_UP)
@@ -417,10 +373,8 @@ class TriangelPrefetcher(PrefetchAlgorithm):
                 te.patt_base = max(0, te.patt_base - self.BASE_DOWN)
                 te.patt_high = max(0, te.patt_high - self.HIGH_DOWN)
 
-        # probabilistic sampling insertion
         self._maybe_sample(prev_x, te, curr)
 
-        # toggle lookahead-2 based on patt_high/base
         if te.patt_high >= 15 and not te.lookahead2:
             te.lookahead2 = True
             logger.info("PC %#x entering lookahead-2", te.pc_tag)
@@ -445,7 +399,6 @@ class TriangelPrefetcher(PrefetchAlgorithm):
                 else:
                     te.sample_rate = max(0, te.sample_rate - 1)
 
-    # Policies / helpers
     def _train_row(self, pc: int) -> TrainEntry:
         te = self.training.get(pc)
         if te is None:
@@ -468,7 +421,6 @@ class TriangelPrefetcher(PrefetchAlgorithm):
             return 2
         return 1
 
-    # Lightweight resizing (dueller-lite)
     def _maybe_resize(self):
         ratio = self.useful_prefetches / max(1, self.issued_prefetches)
         old_ways = self.num_ways
@@ -477,6 +429,7 @@ class TriangelPrefetcher(PrefetchAlgorithm):
             and (self.num_sets * (self.num_ways + 1)) <= self.max_size
         ):
             self.num_ways += 1
+            # delegate structural change to Cache.change_num_ways
             self.cache.change_num_ways(self.num_ways)
             logger.info("Triangel: GROW ways to %d", self.num_ways)
         elif ratio <= self.shrink_thresh and self.num_ways > 1:

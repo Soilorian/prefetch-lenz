@@ -23,6 +23,10 @@ import logging
 from collections import deque
 from typing import Deque, Dict, List, Optional
 
+from prefetchlenz.prefetchingalgorithm.impl._shared import (
+    align_to_region,
+    get_region_offset,
+)
 from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
@@ -81,14 +85,16 @@ TRIGGER_KEY_MASK = CONFIG["TRIGGER_KEY_MASK"]
 # -------------------------
 # Utility helpers
 # -------------------------
+
+
 def region_base(addr: int) -> int:
     """Return base address of the region containing addr."""
-    return (addr // REGION_SIZE) * REGION_SIZE
+    return align_to_region(addr, REGION_SIZE)
 
 
 def block_index_in_region(addr: int) -> int:
     """Return block index (0..BLOCKS_PER_REGION-1) within the region for addr."""
-    return (addr % REGION_SIZE) // BLOCK_SIZE
+    return get_region_offset(addr, REGION_SIZE, BLOCK_SIZE)
 
 
 # -------------------------
@@ -355,24 +361,23 @@ class PredictionRegister:
         return self.to_stream.popleft()
 
 
-class Scheduler:
-    """Simple immediate scheduler modeling outstanding-prefetch credits."""
+from ._shared import Scheduler as SharedScheduler
 
-    __slots__ = ("max_outstanding", "outstanding")
+
+class Scheduler(SharedScheduler):
+    """Adapter mapping SMS simple counters to the shared Scheduler.
+
+    SMS used a simple outstanding counter. Map max_outstanding -> shared max_outstanding
+    and use issue/credit APIs to track credits. The shared MRB will also be used.
+    """
 
     def __init__(self, max_outstanding: int = MAX_OUTSTANDING_PREFETCH):
-        self.max_outstanding = max_outstanding
-        self.outstanding = 0
+        super().__init__(
+            max_outstanding=max_outstanding, mrbsz=64, prefetch_degree=PREFETCH_DEGREE
+        )
 
     def can_issue(self) -> bool:
-        return self.outstanding < self.max_outstanding
-
-    def issue(self) -> None:
-        self.outstanding += 1
-
-    def credit(self) -> None:
-        if self.outstanding > 0:
-            self.outstanding -= 1
+        return super().can_issue()
 
 
 # -------------------------
@@ -438,7 +443,15 @@ class SMSPrefetcher(PrefetchAlgorithm):
         # Handle prefetch hit crediting: strengthen counter for that block if present in PHT
         if prefetch_hit:
             logger.debug("prefetch hit addr=%x", addr)
-            self.scheduler.credit()
+            # Use shared Scheduler API: credit the specific address so it is removed from outstanding
+            try:
+                self.scheduler.credit(addr)
+            except Exception:
+                # Fallback for adapters that ignore the addr parameter
+                try:
+                    self.scheduler.credit()
+                except Exception:
+                    pass
             p = self.pht.get(rbase)
             if p:
                 if p.counters[bidx] < COUNTER_MAX:
@@ -498,9 +511,11 @@ class SMSPrefetcher(PrefetchAlgorithm):
                 self.pred_regs.popleft()
                 continue
             paddr = pr.region + next_block_idx * BLOCK_SIZE
-            issued_addrs.append(paddr)
-            self.scheduler.issue()
-            logger.info("issue prefetch addr=%x", paddr)
+            # Ask shared scheduler whether we can issue this address (degree=1)
+            issued = self.scheduler.issue([paddr], degree=1)
+            if issued:
+                issued_addrs.append(paddr)
+                logger.info("issue prefetch addr=%x", paddr)
 
         return issued_addrs
 
@@ -520,4 +535,4 @@ class SMSPrefetcher(PrefetchAlgorithm):
         self.initialized = False
         # keep state structures intact but clear prediction registers and scheduler
         self.pred_regs.clear()
-        self.scheduler = Scheduler(max_outstanding=CONFIG["MAX_OUTSTANDING_PREFETCH"])
+        self.scheduler.clear()

@@ -6,15 +6,24 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
-logger = logging.getLogger("prefetchLenz.PerceptronPrefetcher")
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class PerceptronEntry:
-    """Tracks a candidate prefetch for later training."""
+    """Tracks a candidate prefetch for later training.
+
+    Attributes:
+        address: The prefetch address.
+        pc: Program counter associated with this prefetch.
+        features: Dictionary of feature indices used for prediction.
+        depth: Prefetch depth (how many strides ahead).
+        stride: Detected stride value.
+        valid: Whether this entry is valid.
+    """
 
     address: int
     pc: int
@@ -25,12 +34,12 @@ class PerceptronEntry:
 
 
 class PerceptronPrefetcher(PrefetchAlgorithm):
-    """
-    Perceptron-Based Prefetch Filtering (PPF).
+    """Perceptron-based prefetch filtering (PPF).
+
     Implements a perceptron filter on top of a base stride prefetcher.
 
     References:
-      - "Perceptron-Based Prefetch Filtering" (HPCA 2005, Jiménez et al.)
+        - "Perceptron-Based Prefetch Filtering" (HPCA 2005, Jiménez et al.)
     """
 
     def __init__(
@@ -40,6 +49,14 @@ class PerceptronPrefetcher(PrefetchAlgorithm):
         max_stride_history: int = 16,
         weight_table_size: int = 256,
     ):
+        """Initialize perceptron prefetcher.
+
+        Args:
+            cache_line_size_bytes: Size of a cache line in bytes.
+            page_size_bytes: Size of a memory page in bytes.
+            max_stride_history: Maximum number of stride history entries.
+            weight_table_size: Size of each weight table.
+        """
         self.cache_line_size_bytes = cache_line_size_bytes
         self.page_size_bytes = page_size_bytes
         self.max_stride_history = max_stride_history
@@ -65,7 +82,8 @@ class PerceptronPrefetcher(PrefetchAlgorithm):
         self.WEIGHT_MAX = 15
         self.WEIGHT_MIN = -16
 
-    def init(self):
+    def init(self) -> None:
+        """Initialize or reset prefetcher state."""
         for k in self.weight_tables:
             self.weight_tables[k] = [0] * self.weight_table_size
         self.prefetch_table.clear()
@@ -76,13 +94,29 @@ class PerceptronPrefetcher(PrefetchAlgorithm):
     # ----------------- Internal Helpers -----------------
 
     def _hash(self, feature_val: int) -> int:
-        """Hash a feature into table index (simple modulo)."""
+        """Hash a feature value into table index.
+
+        Args:
+            feature_val: Feature value to hash.
+
+        Returns:
+            Table index.
+        """
         return abs(hash(feature_val)) % self.weight_table_size
 
     def _get_features(
         self, access: MemoryAccess, depth: int, stride: int
     ) -> Dict[str, Any]:
-        """Extract hashed features."""
+        """Extract hashed features for prediction.
+
+        Args:
+            access: Memory access event.
+            depth: Prefetch depth.
+            stride: Detected stride.
+
+        Returns:
+            Dictionary mapping feature names to table indices.
+        """
         page_addr = access.address // self.page_size_bytes
         cache_line_addr = access.address // self.cache_line_size_bytes
         return {
@@ -94,11 +128,23 @@ class PerceptronPrefetcher(PrefetchAlgorithm):
         }
 
     def _predict(self, features: Dict[str, Any]) -> int:
-        """Compute perceptron score as sum of feature weights."""
+        """Compute perceptron score as sum of feature weights.
+
+        Args:
+            features: Dictionary of feature indices.
+
+        Returns:
+            Perceptron score.
+        """
         return sum(self.weight_tables[name][idx] for name, idx in features.items())
 
-    def _train(self, features: Dict[str, Any], useful: bool):
-        """Update weights using perceptron rule with saturating counters."""
+    def _train(self, features: Dict[str, Any], useful: bool) -> None:
+        """Update weights using perceptron rule with saturating counters.
+
+        Args:
+            features: Dictionary of feature indices.
+            useful: Whether the prefetch was useful.
+        """
         direction = 1 if useful else -1
         for name, idx in features.items():
             old = self.weight_tables[name][idx]
@@ -110,7 +156,15 @@ class PerceptronPrefetcher(PrefetchAlgorithm):
     # ----------------- Main API -----------------
 
     def progress(self, access: MemoryAccess, prefetch_hit: bool) -> List[int]:
-        """Process a memory access and return prefetch predictions."""
+        """Process a memory access and return prefetch predictions.
+
+        Args:
+            access: The current memory access.
+            prefetch_hit: Whether this access was a prefetch hit.
+
+        Returns:
+            List of addresses to prefetch.
+        """
         prefetches: List[int] = []
         stride = 0
 
@@ -153,7 +207,8 @@ class PerceptronPrefetcher(PrefetchAlgorithm):
         self.last_address_per_pc[access.pc] = access.address
         return prefetches
 
-    def close(self):
+    def close(self) -> None:
+        """Clean up prefetcher state."""
         logger.info("PerceptronPrefetcher closed.")
         self.prefetch_table.clear()
         self.reject_table.clear()

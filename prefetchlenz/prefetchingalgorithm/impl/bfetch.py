@@ -26,8 +26,13 @@ from dataclasses import dataclass
 # The framework's Cache must be available at runtime; tests may use a small in-memory wrapper.
 from typing import Any, Dict, List, Optional, Tuple
 
-# Import MemoryAccess from your repo (must exist)
+from prefetchlenz.prefetchingalgorithm.impl._shared import (
+    MRB,
+    Scheduler,
+    align_to_block,
+)
 from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
+from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchlenz.prefetchingalgorithm.impl.bfetch")
 
@@ -57,6 +62,7 @@ CONFIG: Dict[str, int] = {
 BST_CONF_MAX = CONFIG["BST_CONF_MAX"]
 PREFETCH_DEGREE = CONFIG["PREFETCH_DEGREE"]
 
+
 # ----------------------
 # Data classes
 # ----------------------
@@ -84,8 +90,7 @@ class StreamDescriptor:
 
 def block_base(addr: int) -> int:
     """Return block-aligned base address for an instruction fetch (block size)."""
-    bs = CONFIG["BLOCK_SIZE"]
-    return (addr // bs) * bs
+    return align_to_block(addr, CONFIG["BLOCK_SIZE"])
 
 
 def pc_sequential_next(pc: int) -> int:
@@ -96,163 +101,77 @@ def pc_sequential_next(pc: int) -> int:
 # ----------------------
 # MRB: miss-resolution / suppression buffer
 # ----------------------
-class MRB:
-    """Short-term suppression buffer to avoid immediate re-issue of same blocks."""
-
-    def __init__(self, size: int = CONFIG["MRB_SIZE"]):
-        self.size = size
-        self.buf: List[int] = []
-
-    def insert(self, addr: int) -> None:
-        if addr in self.buf:
-            self.buf.remove(addr)
-            self.buf.append(addr)
-            return
-        if len(self.buf) >= self.size:
-            self.buf.pop(0)
-        self.buf.append(addr)
-        logger.debug("MRB insert %x", addr)
-
-    def contains(self, addr: int) -> bool:
-        return addr in self.buf
-
-    def remove(self, addr: int) -> None:
-        if addr in self.buf:
-            self.buf.remove(addr)
-
-
 # ----------------------
 # Simple scheduler: outstanding cap + MRB suppression
 # ----------------------
-class Scheduler:
-    """Issues prefetches subject to outstanding cap and MRB."""
-
-    def __init__(
-        self,
-        max_outstanding: int = CONFIG["MAX_OUTSTANDING"],
-        mrbsz: int = CONFIG["MRB_SIZE"],
-    ):
-        self.max_outstanding = max_outstanding
-        self.outstanding: List[int] = []  # maintain list for deterministic behavior
-        self.mrb = MRB(size=mrbsz)
-
-    def can_issue(self) -> bool:
-        return len(self.outstanding) < self.max_outstanding
-
-    def issue(self, candidates: List[int]) -> List[int]:
-        """Issue candidates respecting MRB and outstanding cap."""
-        issued = []
-        for a in candidates:
-            if len(issued) >= PREFETCH_DEGREE:
-                break
-            if a in self.outstanding:
-                continue
-            if self.mrb.contains(a):
-                continue
-            if not self.can_issue():
-                break
-            self.outstanding.append(a)
-            self.mrb.insert(a)
-            issued.append(a)
-            logger.info("Scheduler issued prefetch %x", a)
-        return issued
-
-    def credit(self, addr: int) -> None:
-        """Called when a prefetched address is used (prefetch_hit)."""
-        if addr in self.outstanding:
-            self.outstanding.remove(addr)
-            logger.debug("Scheduler credited outstanding for %x", addr)
-        # keep it in MRB to avoid immediate reissue
-        self.mrb.insert(addr)
-
-    def clear(self) -> None:
-        self.outstanding.clear()
-        self.mrb = MRB(size=self.mrb.size)
+from prefetchlenz.prefetchingalgorithm.impl._shared import MRB, Scheduler
 
 
 # ----------------------
 # BST: Branch Stream Table wrapper using supplied Cache
 # ----------------------
 class BST:
-    """
-    Branch Stream Table wrapper.
-
-    Uses the framework's Cache class for storage (set-associative). We store StreamDescriptor
-    values keyed by branch_pc (int). If the project-supplied Cache is not desirable, this class
-    falls back to an in-memory dict.
-
-    Methods:
-      - lookup(branch_pc) -> StreamDescriptor | None
-      - insert(branch_pc, desc)
-      - update_confidence(branch_pc, delta)
-      - remove(branch_pc)
-    """
+    """Branch Stream Table storing PC -> StreamDescriptor mappings."""
 
     def __init__(self, cache_factory: Optional[Any] = None):
         """
-        cache_factory: optional callable (num_sets, num_ways, replacement_policy_cls) -> Cache-like
-        If None, we use an in-memory dict with deterministic eviction policy.
+        Initialize BST.
+
+        Args:
+            cache_factory: Optional cache factory. If None, uses dict fallback.
         """
-        # Try to construct a Cache if factory provided
-        self.use_cache = False
-        self.cache = None
-        if cache_factory is not None:
-            try:
-                # instantiate with num_sets and assoc (ways)
-                self.cache = cache_factory(CONFIG["BST_NUM_SETS"], CONFIG["BST_ASSOC"])
-                self.use_cache = True
-            except Exception:
-                self.use_cache = False
-                self.cache = {}
+        self.use_cache = cache_factory is not None
+        if self.use_cache:
+            self.cache = cache_factory(CONFIG["BST_NUM_SETS"], CONFIG["BST_ASSOC"])
         else:
-            self.cache = {}
-        # fallback dict insertion order tracking for deterministic eviction
-        self._order = []
+            # Dict fallback with LRU ordering
+            self.cache: Dict[int, StreamDescriptor] = {}
+            self._order: List[int] = []
 
     def _key(self, branch_pc: int) -> int:
+        """Convert branch PC to key."""
         return branch_pc
 
-    def lookup(self, branch_pc: int) -> Optional[StreamDescriptor]:
+    def insert(self, branch_pc: int, descriptor: StreamDescriptor) -> None:
+        """Insert or update entry for branch_pc."""
         k = self._key(branch_pc)
         if self.use_cache:
-            v = self.cache.get(k)
-            return v
-        return self.cache.get(k)
-
-    def insert(self, branch_pc: int, desc: StreamDescriptor) -> None:
-        k = self._key(branch_pc)
-        # use limited size logical enforcement if dict fallback
-        if self.use_cache:
-            self.cache.put(k, desc)
-            logger.debug("BST insert via Cache key %x -> %s", k, desc)
-            return
-        # dict fallback
-        if k not in self.cache and len(self.cache) >= CONFIG["BST_NUM_ENTRIES"]:
-            # evict oldest
-            victim = self._order.pop(0)
-            del self.cache[victim]
-            logger.debug("BST evict fallback key %x", victim)
-        self.cache[k] = desc
-        if k in self._order:
-            try:
+            self.cache.put(k, descriptor)
+        else:
+            # Dict fallback: maintain LRU order, evict oldest if at capacity
+            if k not in self.cache and len(self.cache) >= CONFIG["BST_NUM_ENTRIES"]:
+                # Evict oldest
+                if self._order:
+                    oldest = self._order.pop(0)
+                    if oldest in self.cache:
+                        del self.cache[oldest]
+            if k in self._order:
                 self._order.remove(k)
-            except ValueError:
-                pass
-        self._order.append(k)
-        logger.debug("BST insert fallback key %x -> %s", k, desc)
+            self.cache[k] = descriptor
+            self._order.append(k)
+
+    def lookup(self, branch_pc: int) -> Optional[StreamDescriptor]:
+        """Lookup entry for branch_pc."""
+        k = self._key(branch_pc)
+        if self.use_cache:
+            return self.cache.get(k)
+        else:
+            result = self.cache.get(k)
+            if result is not None and k in self._order:
+                # Move to end (MRU)
+                self._order.remove(k)
+                self._order.append(k)
+            return result
 
     def update_conf(self, branch_pc: int, delta: int) -> None:
-        k = self._key(branch_pc)
-        ent = self.lookup(k)
-        if not ent:
-            return
-        ent.conf = max(0, min(BST_CONF_MAX, ent.conf + delta))
-        logger.debug("BST update_conf %x -> %d", k, ent.conf)
-        # write back if using Cache
-        if self.use_cache:
-            self.cache.put(k, ent)
+        """Update confidence for branch_pc entry."""
+        ent = self.lookup(branch_pc)
+        if ent is not None:
+            new_conf = max(0, min(BST_CONF_MAX, ent.conf + delta))
+            ent.conf = new_conf
 
     def remove(self, branch_pc: int) -> None:
+        """Remove entry for branch_pc."""
         k = self._key(branch_pc)
         if self.use_cache:
             self.cache.remove(k)
@@ -268,7 +187,7 @@ class BST:
 # ----------------------
 # BFetchPrefetcher (top-level)
 # ----------------------
-class BFetchPrefetcher:
+class BFetchPrefetcher(PrefetchAlgorithm):
     """
     B-Fetch prefetcher implementation adapted to frameworks without branch predictor signals.
 
@@ -278,6 +197,10 @@ class BFetchPrefetcher:
     - A later demand access equal to predicted_target is treated as branch resolution/hit.
     - Use BST to remember stream descriptors keyed by branch_pc.
     """
+
+    def close(self):
+        """Reset internal state."""
+        self.initialized = False
 
     def __init__(self, cache_factory: Optional[Any] = None):
         """
@@ -321,6 +244,9 @@ class BFetchPrefetcher:
                 ent = self.bst.lookup(self.last_pc)
                 if ent and block_base(ent.target_base) == block_base(addr):
                     self.bst.update_conf(self.last_pc, +1)
+            # Update state for next access
+            self.last_pc = pc
+            self.last_addr = addr
             return []
 
         # Detect non-sequential transfer (candidate predicted branch event)
@@ -337,56 +263,36 @@ class BFetchPrefetcher:
                 branch_pc,
                 pred_target,
             )
-            # Consult BST for branch_pc
+            # MRB and Scheduler are provided by the shared utilities module
+            # Look up BST entry for this branch PC
             ent = self.bst.lookup(branch_pc)
-            if ent and ent.conf > 0:
-                # prepare candidates: target block + lookahead blocks in-order
-                base = block_base(ent.target_base)
-                candidates = []
+            if ent is not None:
+                # Entry exists: issue prefetches for target block + lookahead blocks
+                target_block_base = block_base(pred_target)
+                candidates: List[int] = []
+                # Target block + lookahead blocks
                 for i in range(ent.blocks + CONFIG["LOOKAHEAD_BLOCKS"]):
-                    blk_addr = base + i * CONFIG["BLOCK_SIZE"]
-                    candidates.append(blk_addr)
-                # avoid duplicates and enforce PREFETCH_DEGREE
-                filtered = []
-                seen = set()
-                for c in candidates:
-                    if c not in seen:
-                        filtered.append(c)
-                        seen.add(c)
-                    if len(filtered) >= PREFETCH_DEGREE:
-                        break
-                # Ask scheduler to issue (it handles MRB and outstanding cap)
-                issued = self.scheduler.issue(filtered)
-                logger.info(
-                    "BFetch: issued %d prefetch(es) for branch_pc=%x",
-                    len(issued),
-                    branch_pc,
+                    candidate_addr = target_block_base + i * CONFIG["BLOCK_SIZE"]
+                    candidates.append(candidate_addr)
+                # Issue prefetches through scheduler
+                issued = self.scheduler.issue(
+                    candidates, degree=CONFIG["PREFETCH_DEGREE"]
                 )
             else:
-                # No entry: create one using this observed prediction as training (speculative insert)
-                # create descriptor with default BB size
+                # No entry exists: create new descriptor
+                target_block_base = block_base(pred_target)
                 desc = StreamDescriptor(
-                    target_base=block_base(pred_target),
+                    target_base=target_block_base,
                     blocks=CONFIG["BLOCKS_PER_BB"],
                     conf=CONFIG["BST_INIT_CONF"],
                 )
                 self.bst.insert(branch_pc, desc)
-                logger.debug("BFetch: created BST entry for %x -> %s", branch_pc, desc)
-            # Do not update last_pc/last_addr yet; wait for subsequent resolution
-            # (We still set last_addr to the current access)
-            self.last_addr = addr
-            return issued
+                # No prefetches issued on first observation
+                issued = []
 
-        # Otherwise this is sequential fetch or first event: update last_pc and last_addr
+        # Update state for next access
         self.last_pc = pc
         self.last_addr = addr
-        return []
 
-    def close(self) -> None:
-        logger.info("BFetchPrefetcher.close")
-        # Reset state
-        self.bst = BST()
-        self.scheduler.clear()
-        self.last_pc = None
-        self.last_addr = None
-        self.initialized = False
+        # Return issued prefetches
+        return issued

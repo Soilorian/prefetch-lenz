@@ -6,6 +6,7 @@ import logging
 from collections import deque
 from typing import Deque, Dict, List, Tuple
 
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("markov_predictor")

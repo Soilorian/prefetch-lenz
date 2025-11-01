@@ -32,7 +32,7 @@ def test_init_and_close():
 
 def test_bst_insert_and_evict_fallback():
     """BST fallback dict inserts entries and evicts oldest when capacity exceeded."""
-    bst = BST(cache_factory=None)
+    bst = BST()
     # artificially set small capacity for test
     old_num = CONFIG["BST_NUM_ENTRIES"]
     CONFIG["BST_NUM_ENTRIES"] = 4

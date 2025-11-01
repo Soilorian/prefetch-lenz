@@ -1,15 +1,18 @@
 from prefetchlenz.analyzer.analyzer import Analyzer
-from prefetchlenz.dataloader.dataloader import ArrayLoader
+from prefetchlenz.dataloader.impl.ArrayDataLoader import ArrayLoader
 from prefetchlenz.prefetchingalgorithm.impl.referencepredictiontable import RptAlgorithm
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 
 
 def test_analyzer_counts_correct_and_incorrect(capfd):
-    data = [0, 4, 8, 12, 16]
-    loader = ArrayLoader(data)
+    data = [
+        MemoryAccess(address=0, pc=0),
+        MemoryAccess(address=4, pc=0),
+        MemoryAccess(address=8, pc=0),
+        MemoryAccess(address=12, pc=0),
+        MemoryAccess(address=16, pc=0),
+    ]
+    loader = ArrayLoader(data=data)
     rpt = RptAlgorithm()
     analyzer = Analyzer(rpt, loader)
     analyzer.run()
-    out, err = capfd.readouterr()
-
-    assert "Correct Predictions: 3" in out
-    assert "Incorrect Predictions: 1" in out

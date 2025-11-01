@@ -5,10 +5,10 @@ Feedback Directed Prefetching by Srinath
 import logging
 from typing import List
 
-from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.access.feedbackdirectedmemoryaccess import (
     FeedbackDirectedMemoryAccess,
 )
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchLenz.FeedbackDirectedPrefetcher")

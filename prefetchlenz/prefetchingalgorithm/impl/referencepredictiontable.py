@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Dict, List
 
 from prefetchlenz.config import RptConfig
-from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchLenz.referencepredictiontable")

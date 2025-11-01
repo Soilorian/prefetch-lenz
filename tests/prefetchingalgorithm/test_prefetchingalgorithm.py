@@ -1,3 +1,5 @@
+from sympy import false
+
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 
@@ -15,6 +17,6 @@ class DummyAlgo(PrefetchAlgorithm):
 def test_dummy_algo_progress():
     algo = DummyAlgo()
     algo.init()
-    preds = algo.progress(10)
+    preds = algo.progress(10, prefetch_hit=false)
     assert preds == [11]
     algo.close()

@@ -1,5 +1,5 @@
 import logging
-from abc import abstractmethod
+from abc import ABC
 from typing import List
 
 from prefetchlenz.dataloader.dataloader import DataLoader
@@ -10,6 +10,12 @@ logger = logging.getLogger("prefetchLenz.dataloader.impl")
 
 class ArrayLoader(DataLoader):
     """Loads addresses from a Python list."""
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __len__(self):
+        return len(self.data)
 
     def __init__(self, data: List[MemoryAccess]):
         """
@@ -24,11 +30,3 @@ class ArrayLoader(DataLoader):
 
     def __getitem__(self, item) -> MemoryAccess:
         return self.data[item]
-
-    @abstractmethod
-    def __iter__(self):
-        return self.data.__iter__()
-
-    @abstractmethod
-    def __len__(self):
-        return self.data.__len__()

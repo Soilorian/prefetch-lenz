@@ -39,6 +39,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
+from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchlenz.prefetchingalgorithm.impl.learnprefetch")
 
@@ -182,84 +183,13 @@ class DeltaLSTMModel(nn.Module):
 # -------------------------
 # MRB + Scheduler
 # -------------------------
-class MRB:
-    """Short-term suppression buffer to avoid immediate re-issue of same addresses."""
-
-    def __init__(self, size: int = CONFIG["MRB_SIZE"]):
-        self.size = size
-        self.buf: List[int] = []
-
-    def insert(self, addr: int) -> None:
-        if addr in self.buf:
-            self.buf.remove(addr)
-            self.buf.append(addr)
-            return
-        if len(self.buf) >= self.size:
-            ev = self.buf.pop(0)
-            logger.debug("MRB evicted %x", ev)
-        self.buf.append(addr)
-        logger.debug("MRB insert %x", addr)
-
-    def contains(self, addr: int) -> bool:
-        return addr in self.buf
-
-    def clear(self) -> None:
-        self.buf.clear()
-
-
-class Scheduler:
-    """
-    Issue prefetches subject to outstanding cap and MRB suppression.
-    - outstanding: list of outstanding addresses (deterministic ordering).
-    """
-
-    def __init__(
-        self,
-        max_outstanding: int = CONFIG["MAX_OUTSTANDING"],
-        mrbsz: int = CONFIG["MRB_SIZE"],
-    ):
-        self.max_outstanding = max_outstanding
-        self.outstanding: List[int] = []
-        self.mrb = MRB(size=mrbsz)
-
-    def can_issue(self) -> bool:
-        return len(self.outstanding) < self.max_outstanding
-
-    def issue(self, candidates: List[int], degree: int) -> List[int]:
-        """Issue up to degree addresses from candidates, subject to MRB/outstanding."""
-        issued = []
-        for addr in candidates:
-            if len(issued) >= degree:
-                break
-            if addr in self.outstanding:
-                continue
-            if self.mrb.contains(addr):
-                continue
-            if not self.can_issue():
-                break
-            self.outstanding.append(addr)
-            self.mrb.insert(addr)
-            issued.append(addr)
-            logger.info("Scheduler issued prefetch %x", addr)
-        return issued
-
-    def credit(self, addr: int) -> None:
-        """Credit when a prefetched address is used by the program."""
-        if addr in self.outstanding:
-            self.outstanding.remove(addr)
-            logger.debug("Scheduler credited outstanding for %x", addr)
-        # keep it in MRB to avoid immediate re-issue
-        self.mrb.insert(addr)
-
-    def clear(self) -> None:
-        self.outstanding.clear()
-        self.mrb.clear()
+from prefetchlenz.prefetchingalgorithm.impl._shared import MRB, Scheduler
 
 
 # -------------------------
 # Main Prefetcher adapter
 # -------------------------
-class LearnPrefetcher:
+class LearnPrefetcher(PrefetchAlgorithm):
     """
     PrefetchAlgorithm adapter implementing inference-time Behavior from Hashemi et al.
 

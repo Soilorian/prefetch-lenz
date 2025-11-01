@@ -31,7 +31,7 @@ def test_init_and_reset():
     assert p.initialized is True
     p.close()
     assert p.initialized is False
-    assert p.scheduler.outstanding == 0
+    assert len(p.scheduler.outstanding) == 0
     assert len(p.pred_regs) == 0
 
 
@@ -107,7 +107,7 @@ def test_prefetch_issue_and_crediting():
     p.progress(MemoryAccess(address=hit_addr, pc=0x4000), prefetch_hit=True)
 
     # Scheduler should have credited back at least one outstanding prefetch
-    assert p.scheduler.outstanding >= 0
+    assert len(p.scheduler.outstanding) >= 0
 
 
 def test_chain_and_mrb_like_behavior():

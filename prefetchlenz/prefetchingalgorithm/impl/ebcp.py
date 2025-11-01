@@ -9,7 +9,7 @@ from typing import Deque, List, Optional
 
 from prefetchlenz.cache.Cache import Cache
 from prefetchlenz.cache.replacementpolicy.impl.hawkeye import HawkeyeReplacementPolicy
-from prefetchlenz.dataloader.impl.ArrayDataLoader import MemoryAccess
+from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.impl.ebcp")
@@ -20,32 +20,43 @@ logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.impl.ebcp")
 
 @dataclass
 class Epoch:
-    """
-    Representation of an epoch: a contiguous region of off-chip misses.
+    """Representation of an epoch: a contiguous region of off-chip misses.
+
     Each epoch is identified by its first miss key and stores all aligned
     miss addresses observed before the epoch closes.
+
+    Attributes:
+        first_key: First miss key that identifies this epoch.
+        misses: List of aligned addresses (keys) in this epoch.
     """
 
     first_key: int
-    misses: List[int] = field(default_factory=list)  # aligned addresses (keys)
+    misses: List[int] = field(default_factory=list)  # Aligned addresses (keys).
 
 
 @dataclass
 class CorrelEntry:
-    """
-    Metadata payload for the correlation table:
-      - succ1: predicted miss list for the next epoch (i+1)
-      - succ2: predicted miss list for the epoch after next (i+2)
+    """Metadata payload for the correlation table.
+
+    Attributes:
+        succ1: Predicted miss list for the next epoch (i+1).
+        succ2: Predicted miss list for the epoch after next (i+2).
+
     Lists are bounded and deduplicated while preserving insertion order.
     """
 
     succ1: List[int] = field(default_factory=list)
     succ2: List[int] = field(default_factory=list)
 
-    def merge_succ(self, which: int, seq: List[int], max_len: int):
-        """
-        Merge new miss sequence 'seq' into successor list 'succ1' or 'succ2'.
+    def merge_succ(self, which: int, seq: List[int], max_len: int) -> None:
+        """Merge new miss sequence into successor list.
+
         Ensures uniqueness and enforces a maximum list length.
+
+        Args:
+            which: Which successor list to merge into (1 for succ1, 2 for succ2).
+            seq: Sequence of miss addresses to merge.
+            max_len: Maximum length for the successor list.
         """
         dst = self.succ1 if which == 1 else self.succ2
         seen = set(dst)
@@ -61,33 +72,13 @@ class CorrelEntry:
 
 
 class EbcpPrefetcher(PrefetchAlgorithm):
-    """
-    Epoch-Based Correlation Prefetcher (EBCP).
+    """Epoch-based correlation prefetcher (EBCP).
 
-    Idea:
-    -----
-    - Partition the access stream into epochs using a working-set filter.
-    - An epoch starts on the first miss after quiescence and ends after a run
-      of 'quiescence_len' consecutive hits.
-    - Correlate first-miss of epoch i with the miss lists of epochs i+1, i+2.
-    - On encountering a first miss, prefetch the predicted successor lists.
-
-    Parameters
-    ----------
-    line_size : int
-        Line size for alignment.
-    ws_capacity : int
-        Capacity (lines) of the working-set filter.
-    quiescence_len : int
-        Hits required to terminate an epoch.
-    degree_epochs : int
-        How many future epochs to prefetch (1 or 2).
-    max_targets_per_epoch : int
-        Maximum addresses to prefetch from each successor epoch.
-    table_sets, table_ways : int
-        Associativity parameters of the correlation table.
-    replacement_policy_cls
-        Replacement policy for correlation table (default: Hawkeye).
+    Partitions the access stream into epochs using a working-set filter.
+    An epoch starts on the first miss after quiescence and ends after a run
+    of 'quiescence_len' consecutive hits.
+    Correlates first-miss of epoch i with the miss lists of epochs i+1, i+2.
+    On encountering a first miss, prefetches the predicted successor lists.
     """
 
     def __init__(
@@ -101,6 +92,19 @@ class EbcpPrefetcher(PrefetchAlgorithm):
         table_ways: int = 2,
         replacement_policy_cls=HawkeyeReplacementPolicy,
     ):
+        """Initialize EBCP prefetcher.
+
+        Args:
+            line_size: Line size for alignment.
+            ws_capacity: Capacity (lines) of the working-set filter.
+            quiescence_len: Hits required to terminate an epoch.
+            degree_epochs: How many future epochs to prefetch (1 or 2).
+            max_targets_per_epoch: Maximum addresses to prefetch from each successor epoch.
+            table_sets: Number of sets in the correlation table.
+            table_ways: Number of ways per set in the correlation table.
+            replacement_policy_cls: Replacement policy for correlation table
+                (default: Hawkeye).
+        """
         # Parameters
         self.line_size = line_size
         self.ws_capacity = ws_capacity
@@ -141,10 +145,8 @@ class EbcpPrefetcher(PrefetchAlgorithm):
 
     # ------------------------------- Lifecycle --------------------------------
 
-    def init(self):
-        """
-        Initialize/reset prefetcher state at simulation start.
-        """
+    def init(self) -> None:
+        """Initialize or reset prefetcher state at simulation start."""
         self.table.flush()
         self._ws.clear()
         self._active_epoch = None
@@ -155,9 +157,10 @@ class EbcpPrefetcher(PrefetchAlgorithm):
         self._last_access = None
         logger.info("EBCP initialized (state cleared)")
 
-    def close(self):
-        """
-        Cleanup at simulation end. Dumps stats to logger.
+    def close(self) -> None:
+        """Clean up at simulation end.
+
+        Dumps stats to logger.
         """
         logger.info(
             "EBCP closed: issued=%d useful=%d (%.1f%% useful) table_entries=%d",
@@ -174,20 +177,14 @@ class EbcpPrefetcher(PrefetchAlgorithm):
     # --------------------------------- Core -----------------------------------
 
     def progress(self, access: MemoryAccess, prefetch_hit: bool) -> List[int]:
-        """
-        Called for each observed access.
+        """Process an observed access.
 
-        Parameters
-        ----------
-        access : MemoryAccess
-            Memory access event (address, PC, is_write).
-        prefetch_hit : bool
-            True if this access hit a prefetched line.
+        Args:
+            access: Memory access event (address, PC, is_write).
+            prefetch_hit: True if this access hit a prefetched line.
 
-        Returns
-        -------
-        List[int]
-            Aligned addresses to prefetch.
+        Returns:
+            List of aligned addresses to prefetch.
         """
         addr_aligned = self._align(access.address)
         preds: List[int] = []
@@ -227,10 +224,16 @@ class EbcpPrefetcher(PrefetchAlgorithm):
 
     # ---------------------------- Epoch Management -----------------------------
 
-    def _start_epoch(self, first_key: int):
+    def _start_epoch(self, first_key: int) -> None:
+        """Start a new epoch.
+
+        Args:
+            first_key: First miss key for the new epoch.
+        """
         self._active_epoch = Epoch(first_key=first_key, misses=[first_key])
 
-    def _end_epoch(self):
+    def _end_epoch(self) -> None:
+        """End the current epoch and update correlation table."""
         ep = self._active_epoch
         self._active_epoch = None
         if not ep or not ep.misses:
@@ -252,6 +255,14 @@ class EbcpPrefetcher(PrefetchAlgorithm):
     # --------------------------- Correlation Table -----------------------------
 
     def _predict_for_first_miss(self, first_key: int) -> List[int]:
+        """Predict addresses for a first miss.
+
+        Args:
+            first_key: First miss key of the current epoch.
+
+        Returns:
+            List of predicted addresses to prefetch.
+        """
         preds: List[int] = []
         entry: Optional[CorrelEntry] = self.table.get(first_key)
         if isinstance(entry, CorrelEntry):
@@ -270,7 +281,14 @@ class EbcpPrefetcher(PrefetchAlgorithm):
                 )
         return preds
 
-    def _update_table(self, key: int, misses: List[int], which: int):
+    def _update_table(self, key: int, misses: List[int], which: int) -> None:
+        """Update correlation table with epoch miss sequence.
+
+        Args:
+            key: Epoch key to update.
+            misses: List of miss addresses to merge.
+            which: Which successor list to merge into (1 or 2).
+        """
         entry = self.table.get(key)
         if not isinstance(entry, CorrelEntry):
             entry = CorrelEntry()
@@ -288,9 +306,16 @@ class EbcpPrefetcher(PrefetchAlgorithm):
     # ---------------------------- Working-Set Filter ---------------------------
 
     def _classify_and_update_ws(self, key: int) -> bool:
-        """
-        Return True if 'key' is classified as a miss (not in working set).
+        """Classify address as miss and update working-set filter.
+
+        Returns True if 'key' is classified as a miss (not in working set).
         Maintains a bounded LRU filter.
+
+        Args:
+            key: Aligned address key.
+
+        Returns:
+            True if classified as a miss, False otherwise.
         """
         miss = key not in self._ws
         if not miss:
@@ -304,6 +329,13 @@ class EbcpPrefetcher(PrefetchAlgorithm):
     # --------------------------------- Utils -----------------------------------
 
     def _align(self, addr: int) -> int:
-        """Aligns an address to cache-line boundary."""
+        """Align an address to cache-line boundary.
+
+        Args:
+            addr: Address to align.
+
+        Returns:
+            Aligned address.
+        """
         mask = ~(self.line_size - 1)
         return addr & mask

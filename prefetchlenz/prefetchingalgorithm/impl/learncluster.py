@@ -38,6 +38,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
+from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchlenz.prefetchingalgorithm.impl.learncluster")
 
@@ -233,68 +234,13 @@ class ClusterLSTMModel(nn.Module):
 # -------------------------
 # MRB & Scheduler (same pattern as other modules)
 # -------------------------
-class MRB:
-    def __init__(self, size: int = CONFIG["MRB_SIZE"]):
-        self.size = size
-        self.buf: List[int] = []
-
-    def insert(self, a: int):
-        if a in self.buf:
-            self.buf.remove(a)
-            self.buf.append(a)
-            return
-        if len(self.buf) >= self.size:
-            self.buf.pop(0)
-        self.buf.append(a)
-
-    def contains(self, a: int) -> bool:
-        return a in self.buf
-
-    def clear(self):
-        self.buf.clear()
-
-
-class Scheduler:
-    def __init__(
-        self,
-        max_outstanding: int = CONFIG["MAX_OUTSTANDING"],
-        mrbsz: int = CONFIG["MRB_SIZE"],
-    ):
-        self.max_outstanding = max_outstanding
-        self.outstanding: List[int] = []
-        self.mrb = MRB(size=mrbsz)
-
-    def issue(self, candidates: List[int], degree: int) -> List[int]:
-        issued = []
-        for a in candidates:
-            if len(issued) >= degree:
-                break
-            if a in self.outstanding:
-                continue
-            if self.mrb.contains(a):
-                continue
-            if len(self.outstanding) >= self.max_outstanding:
-                break
-            self.outstanding.append(a)
-            self.mrb.insert(a)
-            issued.append(a)
-            logger.info("Scheduler issued %x", a)
-        return issued
-
-    def credit(self, addr: int):
-        if addr in self.outstanding:
-            self.outstanding.remove(addr)
-        self.mrb.insert(addr)
-
-    def clear(self):
-        self.outstanding.clear()
-        self.mrb.clear()
+from prefetchlenz.prefetchingalgorithm.impl._shared import MRB, Scheduler
 
 
 # -------------------------
 # Top-level adapter
 # -------------------------
-class LearnClusterPrefetcher:
+class LearnClusterPrefetcher(PrefetchAlgorithm):
     """
     Top-level adapter implementing the clustering + LSTM prefetcher.
 

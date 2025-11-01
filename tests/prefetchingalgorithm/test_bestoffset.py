@@ -52,3 +52,96 @@ def test():
         prefetcher.offset is None or prefetcher.offset <= prefetcher.bad_score
     ), "No offset should be selected if no pattern is found after max rounds."
     print("Test 3 passed: Prefetcher correctly did not issue prefetches.\n")
+
+
+def test_no_match_in_recent_table():
+    """Test that offset score doesn't update when pattern doesn't match."""
+    prefetcher = BestOffsetPrefetcher(max_score=3, max_rounds=100)
+    prefetcher.init()
+
+    # Add access
+    prefetcher.progress(MemoryAccess(address=1000, pc=0), False)
+
+    # Next access doesn't match any offset pattern
+    prefetcher.progress(MemoryAccess(address=5000, pc=0), False)
+
+    # No offset should be learned
+    assert (
+        prefetcher.offset is None
+    ), "No offset should be learned without pattern match"
+
+
+def test_offset_wraparound():
+    """Test that offset index wraps around when testing offsets."""
+    prefetcher = BestOffsetPrefetcher(max_score=1000, max_rounds=1)
+    prefetcher.init()
+
+    # Access many times to wrap around offset list
+    num_offsets = len(prefetcher.offset_list.offsets)
+    for i in range(num_offsets + 10):
+        prefetcher.progress(MemoryAccess(address=1000 + i, pc=0), False)
+
+    # Should have wrapped around and still be training
+    assert prefetcher.current_offset_index < num_offsets
+
+
+def test_get_best_offset_no_qualifying():
+    """Test get_best_offset when no offset exceeds bad_score."""
+    from prefetchlenz.prefetchingalgorithm.impl.bestoffset import OffsetList
+
+    offset_list = OffsetList()
+    offset_list.update_score(4, 0)  # Score of 0, below bad_score=1
+
+    best = offset_list.get_best_offset(bad_score=1)
+    assert best is None, "Should return None when no offset exceeds bad_score"
+
+
+def test_init_and_close():
+    """Test that init and close properly reset state."""
+    prefetcher = BestOffsetPrefetcher(max_score=5, max_rounds=10)
+    prefetcher.init()
+
+    # Set some state
+    prefetcher.progress(MemoryAccess(address=100, pc=0), False)
+    assert prefetcher.current_round == 0
+    assert prefetcher.current_offset_index > 0
+
+    # Close should reset
+    prefetcher.close()
+    assert prefetcher.offset is None
+    assert prefetcher.current_round == 0
+    assert prefetcher.current_offset_index == 0
+
+
+def test_prefetch_after_training():
+    """Test that prefetches are issued after training completes."""
+    prefetcher = BestOffsetPrefetcher(max_score=2, max_rounds=100)
+    prefetcher.init()
+
+    # Train offset 8
+    for i in range(10):
+        prefetcher.progress(MemoryAccess(address=1000 + 8 * i, pc=0), False)
+        prefetcher.progress(MemoryAccess(address=1008 + 8 * i, pc=0), False)
+        if prefetcher.offset is not None:
+            break
+
+    # Once trained, should prefetch
+    if prefetcher.offset is not None:
+        prefetches = prefetcher.progress(MemoryAccess(address=2000, pc=0), False)
+        assert len(prefetches) > 0, "Should issue prefetch after training"
+        assert prefetches[0] == 2000 + prefetcher.offset
+
+
+def test_prefetch_hit_parameter():
+    """Test that prefetch_hit parameter doesn't break the prefetcher."""
+    prefetcher = BestOffsetPrefetcher(max_score=3, max_rounds=100)
+    prefetcher.init()
+
+    # Prefetch hit shouldn't cause errors
+    prefetcher.progress(MemoryAccess(address=100, pc=0), prefetch_hit=True)
+    prefetches = prefetcher.progress(
+        MemoryAccess(address=104, pc=0), prefetch_hit=False
+    )
+
+    # Should continue working normally (prefetch_hit is unused but shouldn't break)
+    assert isinstance(prefetches, list), "Should return list of prefetches"

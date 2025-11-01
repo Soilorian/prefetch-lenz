@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Set, Tuple
 
 from prefetchlenz.prefetchingalgorithm.access.graphmemoryaccess import GraphMemoryAccess
+from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.graph_hw")
 logger.addHandler(logging.NullHandler())
@@ -314,36 +315,21 @@ class AddressGenerator:
 # ---------------------- Scheduler -------------------------------------------
 
 
-class Scheduler:
-    """
-    Simple scheduler that throttles using EWMA PRESSURE and outstanding count.
-    - pressure_threshold: if EWMA_PRESSURE >= threshold, block new prefetches.
-    - outstanding_limit: absolute cap on outstanding prefetches.
+from ._shared import Scheduler as SharedScheduler
+
+# Thin adapter to adapt the shared Scheduler API to GraphPrefetcher's expectations.
+
+
+class Scheduler(SharedScheduler):
+    """Adapter that exposes select(...) similar to the original implementation.
+
+    Parameters are mapped: pressure_threshold -> unused (pressure gating is left to caller via EWMA),
+    outstanding_limit -> mapped to shared max_outstanding.
     """
 
     def __init__(self, pressure_threshold: float = 8.0, outstanding_limit: int = 8192):
-        self.pressure_threshold = float(pressure_threshold)
-        self.outstanding_limit = int(outstanding_limit)
-
-    def allow_issue(
-        self, ewmas: Dict[Metric, Optional[float]], outstanding_count: int
-    ) -> bool:
-        pr = ewmas.get(Metric.PRESSURE)
-        if pr is not None and pr >= self.pressure_threshold:
-            logger.debug(
-                "Scheduler: blocked by pressure %.3f >= %.3f",
-                pr,
-                self.pressure_threshold,
-            )
-            return False
-        if outstanding_count >= self.outstanding_limit:
-            logger.debug(
-                "Scheduler: blocked by outstanding limit %d >= %d",
-                outstanding_count,
-                self.outstanding_limit,
-            )
-            return False
-        return True
+        # Use shared Scheduler to limit outstanding prefetches.
+        super().__init__(max_outstanding=outstanding_limit, mrbsz=64, prefetch_degree=8)
 
     def select(
         self,
@@ -352,10 +338,13 @@ class Scheduler:
         outstanding_count: int,
         degree: int,
     ) -> List[int]:
-        if not self.allow_issue(ewmas, outstanding_count):
+        # We respect EWMA pressure gating here to keep original semantics.
+        pr = ewmas.get(Metric.PRESSURE)
+        if pr is not None and pr >= 8.0:
+            logger.debug("Scheduler: blocked by pressure %.3f >= 8.0", pr)
             return []
-        # simple selection: return first N candidates
-        return candidates[:degree]
+        # Delegate to shared Scheduler.issue which enforces max_outstanding and MRB
+        return self.issue(candidates, degree=degree)
 
 
 # ---------------------- OutstandingTracker ----------------------------------
@@ -414,7 +403,7 @@ class OutstandingTracker:
 
 
 @dataclass
-class GraphPrefetcher:
+class GraphPrefetcher(PrefetchAlgorithm):
     """
     Hardware-like graph prefetcher that wires components:
       AddrFilter -> ObservationQueue -> EwmaCalculator -> AddressGenerator -> Scheduler -> OutstandingTracker

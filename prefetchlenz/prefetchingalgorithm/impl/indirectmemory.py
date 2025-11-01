@@ -27,6 +27,9 @@ from typing import Dict, List, Optional
 
 from prefetchlenz.cache.Cache import Cache
 from prefetchlenz.cache.replacementpolicy.impl.lru import LruReplacementPolicy
+from prefetchlenz.prefetchingalgorithm.impl._shared import (
+    SaturatingCounter as BaseSaturatingCounter,
+)
 from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
@@ -56,23 +59,14 @@ MAX_COUNTER_VALUE = (1 << CONFIG["NUM_INDIRECT_COUNTER_BITS"]) - 1
 # ----------------------
 # Saturating Counter
 # ----------------------
-class SaturatingCounter:
-    """Saturating counter with configurable bit width."""
+
+
+# Extend shared SaturatingCounter with indirectmemory-specific methods
+class SaturatingCounter(BaseSaturatingCounter):
+    """Saturating counter with configurable bit width and indirect memory extensions."""
 
     def __init__(self, bits: int = CONFIG["NUM_INDIRECT_COUNTER_BITS"]):
-        self.bits = bits
-        self.max_value = (1 << bits) - 1
-        self.value = 0
-
-    def increment(self) -> None:
-        """Increment counter (saturates at max)."""
-        if self.value < self.max_value:
-            self.value += 1
-
-    def decrement(self) -> None:
-        """Decrement counter (saturates at 0)."""
-        if self.value > 0:
-            self.value -= 1
+        super().__init__(bits=bits, initial_value=0)
 
     def reset(self) -> None:
         """Reset counter to maximum value."""

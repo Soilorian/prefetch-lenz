@@ -25,6 +25,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from prefetchlenz.prefetchingalgorithm.impl._shared import get_page_number
+from prefetchlenz.prefetchingalgorithm.impl._shared import (
+    get_page_offset as _get_page_offset,
+)
 from prefetchlenz.prefetchingalgorithm.memoryaccess import MemoryAccess
 from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
@@ -58,14 +62,16 @@ PATTERN_BITS = CONFIG["PATTERN_BITS"]
 # ----------------------
 # Helper Functions
 # ----------------------
+
+
 def page_number(address: int) -> int:
     """Get page number from address."""
-    return address // CONFIG["PAGE_SIZE"]
+    return get_page_number(address, CONFIG["PAGE_SIZE"])
 
 
 def page_offset(address: int) -> int:
     """Get block offset within page."""
-    return (address % CONFIG["PAGE_SIZE"]) // CONFIG["BLOCK_SIZE"]
+    return _get_page_offset(address, CONFIG["PAGE_SIZE"]) // CONFIG["BLOCK_SIZE"]
 
 
 def region_in_page(offset: int) -> int:

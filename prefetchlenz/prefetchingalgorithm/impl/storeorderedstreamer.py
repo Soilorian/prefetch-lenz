@@ -12,13 +12,14 @@ from typing import Deque, Dict, List, Optional, Set, Tuple
 from prefetchlenz.prefetchingalgorithm.access.storeorderedmemoryaccess import (
     StoreOrderedMemoryAccess,
 )
+from prefetchlenz.prefetchingalgorithm.prefetchingalgorithm import PrefetchAlgorithm
 
 logger = logging.getLogger("prefetchLenz.prefetchingalgorithm.sos")
 logger.addHandler(logging.NullHandler())
 
 
 @dataclass
-class StoreOrderedStreamer:
+class StoreOrderedStreamer(PrefetchAlgorithm):
     """
     Store-Ordered Streaming (SOS) Prefetcher.
 

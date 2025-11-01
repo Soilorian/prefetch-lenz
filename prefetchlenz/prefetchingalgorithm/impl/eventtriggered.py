@@ -234,15 +234,15 @@ class ObservationQueue:
 # -------------------------------- Scheduler -----------------------------------
 
 
-class Scheduler:
-    """
-    Minimal scheduler with a simple rate limiter.
+from ._shared import Scheduler as SharedScheduler
 
-    Blocks prefetch issue when the EWMA PRESSURE metric exceeds a threshold.
-    """
+
+class Scheduler(SharedScheduler):
+    """Adapter that provides allow(...) semantics while delegating issuance to shared Scheduler."""
 
     def __init__(self, pressure_threshold: float = 8.0):
-        self.pressure_threshold = pressure_threshold
+        super().__init__(max_outstanding=8192, mrbsz=64, prefetch_degree=2)
+        self.pressure_threshold = float(pressure_threshold)
 
     def allow(self, ewma_params: Dict[Metric, Optional[float]]) -> bool:
         pr = ewma_params.get(Metric.PRESSURE)
