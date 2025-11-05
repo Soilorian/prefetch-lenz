@@ -1,7 +1,7 @@
 """
 Domino Temporal Prefetcher
 
-Algorithm: Domino prefetcher implementation (defaults used where paper values are absent).
+Algorithm: Domino prefetcher implementation by Bakhshalipour et al.
 
 This is a temporal prefetcher that predicts future memory addresses based on recent
 miss sequences. It maintains two miss history tables (MHT1 and MHT2) that track
